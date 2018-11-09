@@ -1,0 +1,6 @@
+[submodule "deps/alta-core"]
+	path = deps/alta-core
+	url = https://github.com/alta-lang/alta-core.git
+[submodule "deps/ceetah"]
+	path = deps/ceetah
+	url = https://github.com/alta-lang/ceetah.git
