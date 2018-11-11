@@ -100,7 +100,7 @@ std::string Talta::mangleName(AltaCore::DET::ScopeItem* item, bool fullName) {
     if (!isLiteral) {
       itemName = escapeName(itemName);
       for (auto& [name, type]: func->parameters) {
-        itemName += "_1_" + mangleType(type);
+        itemName += "_1_" + mangleType(type.get());
       }
     }
   } else if (nodeType == NodeType::Variable) {
@@ -110,17 +110,18 @@ std::string Talta::mangleName(AltaCore::DET::ScopeItem* item, bool fullName) {
   }
 
   if (!isLiteral && fullName) {
-    auto scope = item->parentScope;
-    while (scope != nullptr) {
-      if (scope->parentModule != nullptr) {
-        mangled = mangleName(scope->parentModule) + "_0_" + mangled;
-        scope = nullptr; // modules are root nodes, stop because we found one
-      } else if (scope->parentFunction != nullptr) {
-        mangled = mangleName(scope->parentFunction) + "_0_" + mangled;
-        scope = scope->parentFunction->parentScope;
-      } else if (scope->parent != nullptr) {
+    auto maybeScope = item->parentScope;
+    while (!maybeScope.expired()) {
+      auto scope = maybeScope.lock();
+      if (!scope->parentModule.expired()) {
+        mangled = mangleName(scope->parentModule.lock().get()) + "_0_" + mangled;
+        maybeScope = std::weak_ptr<DET::Scope>(); // modules are root nodes, stop because we found one
+      } else if (!scope->parentFunction.expired()) {
+        mangled = mangleName(scope->parentFunction.lock().get()) + "_0_" + mangled;
+        maybeScope = scope->parentFunction.lock()->parentScope;
+      } else if (!scope->parent.expired()) {
         mangled = "_4_" + std::to_string(scope->relativeID) + "_0_" + mangled;
-        scope = scope->parent;
+        maybeScope = scope->parent;
       }
     }
   }
@@ -135,7 +136,7 @@ to include a module:
 header.insertPreprocessorInclusion("_ALTA_MODULE_" + mangleName(altaRoot->$module) + "_0_INCLUDE_" + mangleName(dependency), Ceetah::AST::InclusionType::Computed);
 */
 
-Ceetah::AST::Type* Talta::CTranspiler::transpileType(AltaCore::DET::Type* type) {
+std::shared_ptr<Ceetah::AST::Type> Talta::CTranspiler::transpileType(AltaCore::DET::Type* type) {
   auto mods = type->modifiers;
 
   // translate certain Alta-only modifiers to C-compatible modifiers
@@ -153,7 +154,7 @@ Ceetah::AST::Type* Talta::CTranspiler::transpileType(AltaCore::DET::Type* type) 
   return source.createType(cTypeNameify(type), mods);
 };
 
-Ceetah::AST::Expression* Talta::CTranspiler::transpile(AltaCore::AST::Node* node) {
+std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore::AST::Node* node) {
   using AltaNodeType = AltaCore::AST::NodeType;
   namespace AAST = AltaCore::AST;
   namespace CAST = Ceetah::AST;
@@ -161,16 +162,16 @@ Ceetah::AST::Expression* Talta::CTranspiler::transpile(AltaCore::AST::Node* node
 
   if (nodeType == AltaNodeType::FunctionDefinitionNode) {
     auto aFunc = dynamic_cast<AAST::FunctionDefinitionNode*>(node);
-    auto mangledFuncName = mangleName(aFunc->$function);
-    std::vector<std::tuple<std::string, CAST::Type*>> cParams;
+    auto mangledFuncName = mangleName(aFunc->$function.get());
+    std::vector<std::tuple<std::string, std::shared_ptr<CAST::Type>>> cParams;
     for (auto& [name, type]: aFunc->$function->parameters) {
-      cParams.push_back({ name, transpileType(type) });
+      cParams.push_back({ name, transpileType(type.get()) });
     }
-    auto returnType = transpileType(aFunc->$function->returnType);
+    auto returnType = transpileType(aFunc->$function->returnType.get());
     
     source.insertFunctionDefinition(mangledFuncName, cParams, returnType);
     for (auto& stmt: aFunc->body->statements) {
-      transpile(stmt);
+      transpile(stmt.get());
     }
     source.exitInsertionPoint();
 
@@ -181,15 +182,15 @@ Ceetah::AST::Expression* Talta::CTranspiler::transpile(AltaCore::AST::Node* node
     header.exitInsertionPoint();
   } else if (nodeType == AltaNodeType::ExpressionStatement) {
     auto exprStmt = dynamic_cast<AAST::ExpressionStatement*>(node);
-    auto expr = transpile(exprStmt->expression);
+    auto expr = transpile(exprStmt->expression.get());
     if (expr != nullptr) {
       source.insertExpressionStatement(expr);
     }
   } else if (nodeType == AltaNodeType::ReturnDirectiveNode) {
     auto retDir = dynamic_cast<AAST::ReturnDirectiveNode*>(node);
-    Ceetah::AST::Expression* expr = nullptr;
+    std::shared_ptr<Ceetah::AST::Expression> expr = nullptr;
     if (retDir->expression != nullptr) {
-      expr = transpile(retDir->expression);
+      expr = transpile(retDir->expression.get());
     }
     source.insertReturnDirective(expr);
   } else if (nodeType == AltaNodeType::IntegerLiteralNode) {
@@ -198,12 +199,12 @@ Ceetah::AST::Expression* Talta::CTranspiler::transpile(AltaCore::AST::Node* node
   } else if (nodeType == AltaNodeType::VariableDefinitionExpression) {
     auto varDef = dynamic_cast<AAST::VariableDefinitionExpression*>(node);
 
-    auto mangledVarName = mangleName(varDef->$variable);
-    auto type = transpileType(varDef->$variable->type);
+    auto mangledVarName = mangleName(varDef->$variable.get());
+    auto type = transpileType(varDef->$variable->type.get());
 
-    CAST::Expression* init = nullptr;
+    std::shared_ptr<CAST::Expression> init = nullptr;
     if (varDef->initializationExpression != nullptr) {
-      init = transpile(varDef->initializationExpression);
+      init = transpile(varDef->initializationExpression.get());
     }
 
     source.insertVariableDefinition(type, mangledVarName, init);
@@ -213,8 +214,8 @@ Ceetah::AST::Expression* Talta::CTranspiler::transpile(AltaCore::AST::Node* node
     // if it's not contained (i.e. it's a defined in a module root), then declare
     // it in the header
     if (
-      varDef->$variable->parentScope != nullptr &&
-      varDef->$variable->parentScope->parentModule != nullptr
+      !varDef->$variable->parentScope.expired() &&
+      !varDef->$variable->parentScope.lock()->parentModule.expired()
     ) {
       // it's not contained, therefore, declare it in the header, as well
       auto def = "_ALTA_VARIABLE_" + mangledVarName;
@@ -222,31 +223,37 @@ Ceetah::AST::Expression* Talta::CTranspiler::transpile(AltaCore::AST::Node* node
       header.insertPreprocessorDefinition(def);
       header.insertVariableDeclaration(type, mangledVarName);
       header.exitInsertionPoint();
+    } else {
+      // if it is contained, we can return a reference to the newly defined variable
+      return source.createPointer(source.createFetch(mangledVarName));
     }
   } else if (nodeType == AltaNodeType::Accessor) {
     auto acc = dynamic_cast<AAST::Accessor*>(node);
-    return header.createAccessor(transpile(acc->target), mangleName(acc->$item));
+    return source.createAccessor(transpile(acc->target.get()), mangleName(acc->$item.get()));
   } else if (nodeType == AltaNodeType::Fetch) {
     auto fetch = dynamic_cast<AAST::Fetch*>(node);
-    return header.createFetch(mangleName(fetch->$item));
+    return source.createFetch(mangleName(fetch->$item.get()));
+  } else if (nodeType == AltaNodeType::AssignmentExpression) {
+    auto assign = dynamic_cast<AAST::AssignmentExpression*>(node);
+    return source.createAssignment(transpile(assign->target.get()), transpile(assign->value.get()));
   }
   return nullptr;
 };
-void Talta::CTranspiler::transpile(AltaCore::AST::RootNode* altaRoot) {
-  cRoot = new Ceetah::AST::RootNode();
-  hRoot = new Ceetah::AST::RootNode();
+void Talta::CTranspiler::transpile(std::shared_ptr<AltaCore::AST::RootNode> altaRoot) {
+  cRoot = std::make_shared<Ceetah::AST::RootNode>();
+  hRoot = std::make_shared<Ceetah::AST::RootNode>();
   source = Ceetah::Builder(cRoot);
   header = Ceetah::Builder(hRoot);
 
   for (auto& stmt: altaRoot->statements) {
-    transpile(stmt);
+    transpile(stmt.get());
   }
 };
 
-std::map<std::string, std::tuple<Ceetah::AST::RootNode*, Ceetah::AST::RootNode*, AltaCore::DET::Module*>> Talta::recursivelyTranspileToC(AltaCore::AST::RootNode* altaRoot) {
-  std::map<std::string, std::tuple<Ceetah::AST::RootNode*, Ceetah::AST::RootNode*, AltaCore::DET::Module*>> results;
+std::map<std::string, std::tuple<std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<AltaCore::DET::Module>>> Talta::recursivelyTranspileToC(std::shared_ptr<AltaCore::AST::RootNode> altaRoot) {
+  std::map<std::string, std::tuple<std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<AltaCore::DET::Module>>> results;
 
-  AltaCore::AST::RootNode* currentRoot = altaRoot;
+  std::shared_ptr<AltaCore::AST::RootNode> currentRoot = altaRoot;
   CTranspiler transpiler;
   while (currentRoot != nullptr) {
     transpiler.transpile(currentRoot);

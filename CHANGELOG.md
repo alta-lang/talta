@@ -6,6 +6,15 @@ This project follows [semantic versioning](https://semver.org).
 ## [Unreleased]
 Nothing yet.
 
+## [0.1.0] - 2018-11-11
+### Added
+  * Assignment expressions are here!
+  * We now use `shared_ptr`s in some places because Ceetah and AltaCore have switched to using them instead of raw pointers
+    * We didn't completely switch because we can use raw pointers in places where we don't allocate new objects or keep pointers to objects (although we *could* fully switch if we wanted to)
+### Updated
+  * Ceetah v0.1.0
+  * AltaCore v0.1.0
+
 ## [0.0.0] - 2018-11-08
 ### Added
   * Function and variable name mangling

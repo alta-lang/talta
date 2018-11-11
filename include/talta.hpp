@@ -15,17 +15,17 @@ namespace Talta {
   class CTranspiler {
     private:
       std::string cTypeNameify(AltaCore::DET::Type* type);
-      Ceetah::AST::Expression* transpile(AltaCore::AST::Node* node);
-      Ceetah::AST::Type* transpileType(AltaCore::DET::Type* type);
+      std::shared_ptr<Ceetah::AST::Expression> transpile(AltaCore::AST::Node* node);
+      std::shared_ptr<Ceetah::AST::Type> transpileType(AltaCore::DET::Type* type);
     public:
-      Ceetah::AST::RootNode* cRoot = nullptr;
-      Ceetah::AST::RootNode* hRoot = nullptr;
+      std::shared_ptr<Ceetah::AST::RootNode> cRoot = nullptr;
+      std::shared_ptr<Ceetah::AST::RootNode> hRoot = nullptr;
       Ceetah::Builder source = Ceetah::Builder(cRoot);
       Ceetah::Builder header = Ceetah::Builder(hRoot);
       
-      void transpile(AltaCore::AST::RootNode* altaRoot);
+      void transpile(std::shared_ptr<AltaCore::AST::RootNode> altaRoot);
   };
-  std::map<std::string, std::tuple<Ceetah::AST::RootNode*, Ceetah::AST::RootNode*, AltaCore::DET::Module*>> recursivelyTranspileToC(AltaCore::AST::RootNode* altaRoot);
+  std::map<std::string, std::tuple<std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<AltaCore::DET::Module>>> recursivelyTranspileToC(std::shared_ptr<AltaCore::AST::RootNode> altaRoot);
 };
 
 #endif // TALTA_TALTA_HPP
