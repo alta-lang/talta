@@ -1,7 +1,7 @@
 #include "../include/talta.hpp"
 #include "../include/talta/util.hpp"
 
-std::string Talta::CTranspiler::cTypeNameify(AltaCore::DET::Type* type) {
+std::string Talta::cTypeNameify(AltaCore::DET::Type* type) {
   using NT = AltaCore::DET::NativeType;
   if (type->isNative) {
     switch (type->nativeTypeName) {
@@ -9,6 +9,8 @@ std::string Talta::CTranspiler::cTypeNameify(AltaCore::DET::Type* type) {
         return "int";
       case NT::Byte:
         return "char";
+      case NT::Bool:
+        return "unsigned int";
       default:
         throw std::runtime_error("ok, wtaf.");
     }
@@ -26,27 +28,15 @@ std::string Talta::mangleType(AltaCore::DET::Type* type) {
     if (mod & (uint8_t)TypeModifier::Constant) {
       mangled += "const_3_";
     }
-    if (mod & (uint8_t)TypeModifier::Pointer || mod & (uint8_t)TypeModifier::Reference) {
+    if (mod & (uint8_t)TypeModifier::Pointer) {
       mangled += "ptr_3_";
+    }
+    if (mod & (uint8_t)TypeModifier::Reference) {
+      mangled += "ref_3_";
     }
   }
 
-  if (type->isNative) {
-    std::string nativeTypeName;
-    switch (type->nativeTypeName) {
-      case NT::Integer:
-        nativeTypeName = "int";
-        break;
-      case NT::Byte:
-        nativeTypeName = "char";
-        break;
-      default:
-        throw std::runtime_error("ok, wtaf.");
-    }
-    mangled += nativeTypeName;
-  } else {
-    throw std::runtime_error("wtf, no.");
-  }
+  mangled += cTypeNameify(type);
 
   return mangled;
 };
@@ -81,6 +71,21 @@ std::string Talta::escapeName(std::string name) {
   return escaped;
 };
 
+std::string Talta::headerMangle(AltaCore::DET::Module* item, bool fullName) {
+  return "_ALTA_MODULE_" + mangleName(item, fullName);
+};
+std::string Talta::headerMangle(AltaCore::DET::ScopeItem* item, bool fullName) {
+  using NodeType = AltaCore::DET::NodeType;
+  auto nodeType = item->nodeType();
+
+  if (nodeType == NodeType::Function) {
+    return "_ALTA_FUNCTION_" + mangleName(item, fullName);
+  } else if (nodeType == NodeType::Variable) {
+    return "_ALTA_VARIABLE_" + mangleName(item, fullName);
+  }
+
+  return mangleName(item, fullName);
+};
 std::string Talta::mangleName(AltaCore::DET::Module* mod, bool fullName) {
   return escapeName(mod->name);
 };
@@ -154,6 +159,12 @@ std::shared_ptr<Ceetah::AST::Type> Talta::CTranspiler::transpileType(AltaCore::D
   return source.createType(cTypeNameify(type), mods);
 };
 
+void Talta::CTranspiler::headerPredeclaration(std::string def, std::string mangledModName) {
+  header.insertPreprocessorConditional("(defined(" + def + ") || defined(_ALTA_MODULE_ALL_" + mangledModName + ")) && !defined(_DEFINED_" + def + ')');
+  header.insertPreprocessorUndefinition(def);
+  header.insertPreprocessorDefinition("_DEFINED_" + def);
+};
+
 std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore::AST::Node* node) {
   using AltaNodeType = AltaCore::AST::NodeType;
   namespace AAST = AltaCore::AST;
@@ -175,9 +186,9 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     }
     source.exitInsertionPoint();
 
-    auto def = "_ALTA_FUNCTION_" + mangledFuncName;
-    header.insertPreprocessorConditional("!defined(" + def + ")");
-    header.insertPreprocessorDefinition(def);
+    auto mod = AltaCore::Util::getModule(aFunc->$function->parentScope.lock().get()).lock();
+    auto mangledModName = mangleName(mod.get());
+    headerPredeclaration("_ALTA_FUNCTION_" + mangledFuncName, mangledModName);
     header.insertFunctionDeclaration(mangledFuncName, cParams, returnType);
     header.exitInsertionPoint();
   } else if (nodeType == AltaNodeType::ExpressionStatement) {
@@ -218,13 +229,13 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
       !varDef->$variable->parentScope.lock()->parentModule.expired()
     ) {
       // it's not contained, therefore, declare it in the header, as well
-      auto def = "_ALTA_VARIABLE_" + mangledVarName;
-      header.insertPreprocessorConditional("!defined(" + def + ")");
-      header.insertPreprocessorDefinition(def);
+      auto mod = varDef->$variable->parentScope.lock()->parentModule.lock();
+      auto mangledModName = mangleName(mod.get());
+      headerPredeclaration("_ALTA_VARIABLE_" + mangledVarName, mangledModName);
       header.insertVariableDeclaration(type, mangledVarName);
       header.exitInsertionPoint();
-    } else {
-      // if it is contained, we can return a reference to the newly defined variable
+    } else if (AltaCore::Util::isInFunction(varDef->$variable.get())) {
+      // if it is contained in a function, we can return a reference to the newly defined variable
       return source.createPointer(source.createFetch(mangledVarName));
     }
   } else if (nodeType == AltaNodeType::Accessor) {
@@ -236,6 +247,32 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
   } else if (nodeType == AltaNodeType::AssignmentExpression) {
     auto assign = dynamic_cast<AAST::AssignmentExpression*>(node);
     return source.createAssignment(transpile(assign->target.get()), transpile(assign->value.get()));
+  } else if (nodeType == AltaNodeType::BooleanLiteralNode) {
+    auto boolLit = dynamic_cast<AAST::BooleanLiteralNode*>(node);
+    if (boolLit->value) {
+      return source.createIntegerLiteral(1);
+    } else {
+      return source.createIntegerLiteral(0);
+    }
+  } else if (nodeType == AltaNodeType::BinaryOperation) {
+    auto binOp = dynamic_cast<AAST::BinaryOperation*>(node);
+    // for now, we can just cast from one to the other, since they're
+    // identical. however, if Alta ever introduces non-C binary operators,
+    // this will need to be changed. please take note of that!
+    auto cOpType = (CAST::OperatorType)binOp->type;
+    return source.createBinaryOperation(cOpType, transpile(binOp->left.get()), transpile(binOp->right.get()));
+  } else if (nodeType == AltaNodeType::ImportStatement) {
+    auto import = dynamic_cast<AAST::ImportStatement*>(node);
+    auto mangledParentName = mangleName(import->$parentModule.get());
+    auto mangleImportName = mangleName(import->$importedModule.get());
+    if (import->isAliased) {
+      header.insertPreprocessorDefinition("_ALTA_MODULE_ALL_" + mangleImportName);
+    } else {
+      for (auto& item: import->$importedItems) {
+        header.insertPreprocessorDefinition(headerMangle(item.get()));
+      }
+    }
+    header.insertPreprocessorInclusion("_ALTA_MODULE_" + mangledParentName + "_0_INCLUDE_" + mangleImportName, CAST::InclusionType::Computed);
   }
   return nullptr;
 };
@@ -248,17 +285,29 @@ void Talta::CTranspiler::transpile(std::shared_ptr<AltaCore::AST::RootNode> alta
   for (auto& stmt: altaRoot->statements) {
     transpile(stmt.get());
   }
+  header.insertPreprocessorUndefinition("_ALTA_MODULE_ALL_" + mangleName(altaRoot->$module.get()));
 };
 
-std::map<std::string, std::tuple<std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<AltaCore::DET::Module>>> Talta::recursivelyTranspileToC(std::shared_ptr<AltaCore::AST::RootNode> altaRoot) {
+std::map<std::string, std::tuple<std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<AltaCore::DET::Module>>> Talta::recursivelyTranspileToC(std::shared_ptr<AltaCore::AST::RootNode> altaRoot, CTranspiler* transpiler) {
   std::map<std::string, std::tuple<std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<AltaCore::DET::Module>>> results;
 
-  std::shared_ptr<AltaCore::AST::RootNode> currentRoot = altaRoot;
-  CTranspiler transpiler;
-  while (currentRoot != nullptr) {
-    transpiler.transpile(currentRoot);
-    results[currentRoot->$module->name] = { transpiler.cRoot, transpiler.hRoot, currentRoot->$module };
-    currentRoot = currentRoot->parent;
+  bool deleteIt = false;
+  if (transpiler == nullptr) {
+    deleteIt = true;
+    transpiler = new CTranspiler();
+  }
+
+  transpiler->transpile(altaRoot);
+  results[altaRoot->$module->name] = { transpiler->cRoot, transpiler->hRoot, altaRoot->$module };
+  for (auto& dep: altaRoot->$dependencyASTs) {
+    auto other = recursivelyTranspileToC(dep, transpiler);
+    for (auto& [name, item]: other) {
+      results[name] = item;
+    }
+  }
+
+  if (deleteIt) {
+    delete transpiler;
   }
 
   return results;

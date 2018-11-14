@@ -6,6 +6,17 @@ This project follows [semantic versioning](https://semver.org).
 ## [Unreleased]
 Nothing yet.
 
+## [0.2.0] - 2018-11-13
+### Added
+  * Boolean transpilation
+    * Both boolean literals and the boolean type
+  * Binary operations (`+`, `-`, `*`, `/`)
+  * Module importation!
+    * Full support for cherry-pick imports, theoretical support for alias imports
+### Updated
+  * AltaCore v0.2.0
+  * Ceetah v0.2.0
+
 ## [0.1.0] - 2018-11-11
 ### Added
   * Assignment expressions are here!
