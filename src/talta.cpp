@@ -175,8 +175,8 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     auto aFunc = dynamic_cast<AAST::FunctionDefinitionNode*>(node);
     auto mangledFuncName = mangleName(aFunc->$function.get());
     std::vector<std::tuple<std::string, std::shared_ptr<CAST::Type>>> cParams;
-    for (auto& [name, type]: aFunc->$function->parameters) {
-      cParams.push_back({ name, transpileType(type.get()) });
+    for (auto& var: aFunc->$function->parameterVariables) {
+      cParams.push_back({ mangleName(var.get()), transpileType(var->type.get()) });
     }
     auto returnType = transpileType(aFunc->$function->returnType.get());
     

@@ -6,6 +6,13 @@ This project follows [semantic versioning](https://semver.org).
 ## [Unreleased]
 Nothing yet.
 
+## [0.2.2] - 2018-11-13
+### Fixed
+  * Mangle function parameter names
+    * Previously, they were left unmangled
+### Updated
+  * AltaCore v0.3.1
+
 ## [0.2.1] - 2018-11-13
 ### Updated
   * AltaCore v0.3.0
