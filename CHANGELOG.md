@@ -6,6 +6,10 @@ This project follows [semantic versioning](https://semver.org).
 ## [Unreleased]
 Nothing yet.
 
+## [0.2.1] - 2018-11-13
+### Updated
+  * AltaCore v0.3.0
+
 ## [0.2.0] - 2018-11-13
 ### Added
   * Boolean transpilation
