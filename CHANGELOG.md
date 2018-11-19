@@ -6,14 +6,21 @@ This project follows [semantic versioning](https://semver.org).
 ## [Unreleased]
 Nothing yet.
 
-## [0.2.2] - 2018-11-13
+## [0.3.0] - 2018-11-18
+### Added
+  * Function-pointer type support
+### Updated
+  * AltaCore v0.4.0
+  * Ceetah v0.3.0
+
+## [0.2.2] - 2018-11-18
 ### Fixed
   * Mangle function parameter names
     * Previously, they were left unmangled
 ### Updated
   * AltaCore v0.3.1
 
-## [0.2.1] - 2018-11-13
+## [0.2.1] - 2018-11-18
 ### Updated
   * AltaCore v0.3.0
 

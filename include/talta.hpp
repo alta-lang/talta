@@ -10,6 +10,7 @@ namespace Talta {
   std::string escapeName(std::string name);
   std::string cTypeNameify(AltaCore::DET::Type* type);
   std::string mangleType(AltaCore::DET::Type* type);
+  std::string mangleName(AltaCore::DET::Scope* scope, bool fullName = true);
   std::string mangleName(AltaCore::DET::Module* mod, bool fullName = true);
   std::string mangleName(AltaCore::DET::ScopeItem* item, bool fullName = true);
   std::string headerMangle(AltaCore::DET::Module* item, bool fullName = true);

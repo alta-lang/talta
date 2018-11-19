@@ -3,7 +3,14 @@
 
 std::string Talta::cTypeNameify(AltaCore::DET::Type* type) {
   using NT = AltaCore::DET::NativeType;
-  if (type->isNative) {
+  if (type->isFunction) {
+    std::string result = "_Alta_func_ptr_" + mangleType(type->returnType.get());
+    for (auto& param: type->parameters) {
+      result += '_';
+      result += mangleType(param.get());
+    }
+    return result;
+  } else if (type->isNative) {
     switch (type->nativeTypeName) {
       case NT::Integer:
         return "int";
@@ -21,7 +28,6 @@ std::string Talta::cTypeNameify(AltaCore::DET::Type* type) {
 
 std::string Talta::mangleType(AltaCore::DET::Type* type) {
   using TypeModifier = AltaCore::Shared::TypeModifierFlag;
-  using NT = AltaCore::DET::NativeType;
   std::string mangled;
 
   for (auto& mod: type->modifiers) {
@@ -88,6 +94,18 @@ std::string Talta::headerMangle(AltaCore::DET::ScopeItem* item, bool fullName) {
 };
 std::string Talta::mangleName(AltaCore::DET::Module* mod, bool fullName) {
   return escapeName(mod->name);
+};
+std::string Talta::mangleName(AltaCore::DET::Scope* scope, bool fullName) {
+  std::string mangled = "_4_" + std::to_string(scope->relativeID);
+  if (!fullName) return mangled;
+  if (auto mod = scope->parentModule.lock()) {
+    mangled = mangleName(mod.get(), true) + "_0_" + mangled;
+  } else if (auto func = scope->parentFunction.lock()) {
+    mangled = mangleName(func.get(), true) + "_0_" + mangled;
+  } else if (auto parent = scope->parent.lock()) {
+    mangled = mangleName(parent.get(), true) + "_0_" + mangled;
+  }
+  return mangled;
 };
 std::string Talta::mangleName(AltaCore::DET::ScopeItem* item, bool fullName) {
   using NodeType = AltaCore::DET::NodeType;
@@ -156,7 +174,21 @@ std::shared_ptr<Ceetah::AST::Type> Talta::CTranspiler::transpileType(AltaCore::D
     }
   }
 
-  return source.createType(cTypeNameify(type), mods);
+  auto name = cTypeNameify(type);
+
+  if (type->isFunction) {
+    auto def = "_ALTA_FUNC_PTR_" + name.substr(16);
+    source.insertPreprocessorConditional("!defined(" + def + ")");
+    source.insertPreprocessorDefinition(def);
+    std::vector<std::shared_ptr<Ceetah::AST::Type>> cParams;
+    for (auto& param: type->parameters) {
+      cParams.push_back(transpileType(param.get()));
+    }
+    source.insertTypeDefinition(name, source.createType(transpileType(type->returnType.get()), cParams, mods));
+    source.exitInsertionPoint();
+  }
+
+  return source.createType(name, mods);
 };
 
 void Talta::CTranspiler::headerPredeclaration(std::string def, std::string mangledModName) {
@@ -243,7 +275,11 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     return source.createAccessor(transpile(acc->target.get()), mangleName(acc->$item.get()));
   } else if (nodeType == AltaNodeType::Fetch) {
     auto fetch = dynamic_cast<AAST::Fetch*>(node);
-    return source.createFetch(mangleName(fetch->$item.get()));
+    if (fetch->$item->nodeType() == AltaCore::DET::NodeType::Function) {
+      return source.createPointer(source.createFetch(mangleName(fetch->$item.get())));
+    } else {
+      return source.createFetch(mangleName(fetch->$item.get()));
+    }
   } else if (nodeType == AltaNodeType::AssignmentExpression) {
     auto assign = dynamic_cast<AAST::AssignmentExpression*>(node);
     return source.createAssignment(transpile(assign->target.get()), transpile(assign->value.get()));
