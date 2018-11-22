@@ -21,6 +21,8 @@ namespace Talta {
       std::shared_ptr<Ceetah::AST::Expression> transpile(AltaCore::AST::Node* node);
       std::shared_ptr<Ceetah::AST::Type> transpileType(AltaCore::DET::Type* type);
       void headerPredeclaration(std::string def, std::string mangledModuleName);
+      std::vector<uint8_t> convertTypeModifiers(std::vector<uint8_t> altaModifiers);
+      void defineFunctionalType(std::shared_ptr<AltaCore::DET::Type> type);
     public:
       std::shared_ptr<Ceetah::AST::RootNode> cRoot = nullptr;
       std::shared_ptr<Ceetah::AST::RootNode> hRoot = nullptr;

@@ -6,6 +6,15 @@ This project follows [semantic versioning](https://semver.org).
 ## [Unreleased]
 Nothing yet.
 
+## [0.4.0] - 2018-11-22
+### Added
+  * Package versions are now included as part of mangled module names
+  * Hoisted types support
+    * Currently only necessary for function-pointer types
+  * Function calls can now be transpiled!
+### Updated
+  * AltaCore v0.5.1
+
 ## [0.3.0] - 2018-11-18
 ### Added
   * Function-pointer type support
