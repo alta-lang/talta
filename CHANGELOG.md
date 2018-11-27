@@ -6,6 +6,12 @@ This project follows [semantic versioning](https://semver.org).
 ## [Unreleased]
 Nothing yet.
 
+## [0.5.0] - 2018-11-27
+### Added
+  * Namespace support
+### Updated
+  * AltaCore v0.6.0
+
 ## [0.4.0] - 2018-11-22
 ### Added
   * Package versions are now included as part of mangled module names

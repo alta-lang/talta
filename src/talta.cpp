@@ -119,6 +119,8 @@ std::string Talta::mangleName(AltaCore::DET::Scope* scope, bool fullName) {
     mangled = mangleName(func.get(), true) + "_0_" + mangled;
   } else if (auto parent = scope->parent.lock()) {
     mangled = mangleName(parent.get(), true) + "_0_" + mangled;
+  } else if (auto ns = scope->parentNamespace.lock()) {
+    mangled = mangleName(ns.get(), true) + "_0_" + mangled;
   }
   return mangled;
 };
@@ -145,6 +147,10 @@ std::string Talta::mangleName(AltaCore::DET::ScopeItem* item, bool fullName) {
     auto var = dynamic_cast<DET::Variable*>(item);
     itemName = var->name;
     isLiteral = var->isLiteral;
+  } else if (nodeType == NodeType::Namespace) {
+    auto ns = dynamic_cast<DET::Namespace*>(item);
+    itemName = ns->name;
+    isLiteral = false;
   }
 
   if (!isLiteral && fullName) {
@@ -160,6 +166,9 @@ std::string Talta::mangleName(AltaCore::DET::ScopeItem* item, bool fullName) {
       } else if (!scope->parent.expired()) {
         mangled = "_4_" + std::to_string(scope->relativeID) + "_0_" + mangled;
         maybeScope = scope->parent;
+      } else if (!scope->parentNamespace.expired()) {
+        mangled = mangleName(scope->parentNamespace.lock().get()) + "_0_" + mangled;
+        maybeScope = scope->parentNamespace.lock()->parentScope;
       }
     }
   }
@@ -297,19 +306,19 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     }
   } else if (nodeType == AltaNodeType::Accessor) {
     auto acc = dynamic_cast<AAST::Accessor*>(node);
-    return source.createAccessor(transpile(acc->target.get()), mangleName(acc->$item.get()));
+    if (!acc->$narrowedTo) {
+      throw std::runtime_error("AHH, this accessor needs to be narrowed!");
+    }
+    if (acc->accessesNamespace) {
+      return source.createFetch(mangleName(acc->$narrowedTo.get()));
+    } else {
+      return source.createAccessor(transpile(acc->target.get()), mangleName(acc->$narrowedTo.get()));
+    }
   } else if (nodeType == AltaNodeType::Fetch) {
     auto fetch = dynamic_cast<AAST::Fetch*>(node);
     if (!fetch->$narrowedTo) {
       throw std::runtime_error("AHH, this fetch needs to be narrowed!");
     }
-    /*
-    if (fetch->$narrowedTo->nodeType() == AltaCore::DET::NodeType::Function) {
-      return source.createPointer(source.createFetch(mangleName(fetch->$narrowedTo.get())));
-    } else {
-      return source.createFetch(mangleName(fetch->$narrowedTo.get()));
-    }
-    */
     return source.createFetch(mangleName(fetch->$narrowedTo.get()));
   } else if (nodeType == AltaNodeType::AssignmentExpression) {
     auto assign = dynamic_cast<AAST::AssignmentExpression*>(node);
