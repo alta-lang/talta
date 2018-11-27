@@ -356,6 +356,9 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
       args.push_back(transpile(arg.get()));
     }
     return source.createFunctionCall(transpile(call->target.get()), args);
+  } else if (nodeType == AltaNodeType::StringLiteralNode) {
+    auto lit = dynamic_cast<AAST::StringLiteralNode*>(node);
+    return source.createStringLiteral(lit->value);
   }
   return nullptr;
 };
