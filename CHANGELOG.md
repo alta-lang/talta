@@ -3,8 +3,11 @@ All the changes for Alta's primary (and currently only) backend, the C transpile
 
 This project follows [semantic versioning](https://semver.org).
 
-## [Unreleased]
+## [0.6.0] - 2018-11-28
+### Added
   * String literal support
+### Updated
+  * AltaCore v0.7.0
 
 ## [0.5.0] - 2018-11-27
 ### Added
