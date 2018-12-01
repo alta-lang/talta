@@ -359,6 +359,10 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
   } else if (nodeType == AltaNodeType::StringLiteralNode) {
     auto lit = dynamic_cast<AAST::StringLiteralNode*>(node);
     return source.createStringLiteral(lit->value);
+  } else if (nodeType == AltaNodeType::AttributeStatement) {
+    auto attr = dynamic_cast<AAST::AttributeStatement*>(node);
+    attr->attribute->findAttribute();
+    attr->attribute->run();
   }
   return nullptr;
 };
@@ -367,6 +371,12 @@ void Talta::CTranspiler::transpile(std::shared_ptr<AltaCore::AST::RootNode> alta
   hRoot = std::make_shared<Ceetah::AST::RootNode>();
   source = Ceetah::Builder(cRoot);
   header = Ceetah::Builder(hRoot);
+
+  AltaCore::Attributes::registerAttribute({ "CTranspiler", "include" }, {}, [&](std::shared_ptr<AltaCore::AST::Node> target, std::vector<AltaCore::Attributes::AttributeArgument> args) -> void {
+    if (args.size() == 0) return;
+    if (!args[0].isString) return;
+    header.insertPreprocessorInclusion(args[0].string, Ceetah::AST::InclusionType::System);
+  }, altaRoot->$module->path.toString());
 
   for (auto& stmt: altaRoot->statements) {
     transpile(stmt.get());

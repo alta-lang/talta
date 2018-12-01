@@ -3,6 +3,16 @@ All the changes for Alta's primary (and currently only) backend, the C transpile
 
 This project follows [semantic versioning](https://semver.org).
 
+## [0.7.0] - 2018-12-01
+### Added
+  * General attribute support
+  * `CTranspiler` attribute domain
+    * BTW, `[AttributeString]` = `const ptr const byte`, which is a string literal
+    * Currently, it contains the following attributes:
+      * `include(header: [AttributeString])` = Instructs the C transpiler to include the specified `header` in the current module's header output
+### Updated
+  * AltaCore v0.8.0
+
 ## [0.6.0] - 2018-11-28
 ### Added
   * String literal support
