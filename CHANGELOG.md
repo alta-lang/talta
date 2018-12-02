@@ -3,6 +3,13 @@ All the changes for Alta's primary (and currently only) backend, the C transpile
 
 This project follows [semantic versioning](https://semver.org).
 
+## [0.7.1] - 2018-12-03
+### Changed
+  * Build artificats are now put into their own folders in the build directory: `bin` for executables and `lib` for libraries
+### Updated
+  * AltaCore v0.9.0
+  * Ceetah v0.4.1
+
 ## [0.7.0] - 2018-12-01
 ### Added
   * General attribute support
