@@ -22,3 +22,13 @@ set_target_properties(talta
   LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
+
+# install files
+install(TARGETS talta
+  ARCHIVE DESTINATION lib
+)
+
+install(DIRECTORY "${PROJECT_SOURCE_DIR}/include/"
+  DESTINATION include
+  FILES_MATCHING PATTERN "*"
+)
