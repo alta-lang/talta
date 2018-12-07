@@ -3,6 +3,13 @@ All the changes for Alta's primary (and currently only) backend, the C transpile
 
 This project follows [semantic versioning](https://semver.org).
 
+## [Unreleased]
+### Updated
+  * [AltaCore fbdb646](https://github.com/alta-lang/alta-core/blob/fbdb646a07051b2f929f84647e707f61cf9d0ff1/CHANGELOG.md)
+### Additional Release Notes
+  * We now have a policy of changelog modularization, and this is in effect for the various subprojects
+    * In other words, refer to the changelogs of updated dependencies for additional changes
+
 ## [0.7.1] - 2018-12-03
 ### Changed
   * Build artificats are now put into their own folders in the build directory: `bin` for executables and `lib` for libraries

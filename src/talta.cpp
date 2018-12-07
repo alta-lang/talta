@@ -5,7 +5,7 @@ std::string Talta::cTypeNameify(AltaCore::DET::Type* type) {
   using NT = AltaCore::DET::NativeType;
   if (type->isFunction) {
     std::string result = "_Alta_func_ptr_" + mangleType(type->returnType.get());
-    for (auto& param: type->parameters) {
+    for (auto& [name, param]: type->parameters) {
       result += '_';
       result += mangleType(param.get());
     }
@@ -219,7 +219,7 @@ void Talta::CTranspiler::defineFunctionalType(std::shared_ptr<AltaCore::DET::Typ
   source.insertPreprocessorConditional("!defined(" + def + ")");
   source.insertPreprocessorDefinition(def);
   std::vector<std::shared_ptr<Ceetah::AST::Type>> cParams;
-  for (auto& param: type->parameters) {
+  for (auto& [name, param]: type->parameters) {
     cParams.push_back(transpileType(param.get()));
   }
   source.insertTypeDefinition(name, source.createType(transpileType(type->returnType.get()), cParams, mods));
@@ -352,7 +352,7 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
   } else if (nodeType == AltaNodeType::FunctionCallExpression) {
     auto call = dynamic_cast<AAST::FunctionCallExpression*>(node);
     std::vector<std::shared_ptr<CAST::Expression>> args;
-    for (auto& arg: call->arguments) {
+    for (auto& arg: call->$adjustedArguments) {
       args.push_back(transpile(arg.get()));
     }
     return source.createFunctionCall(transpile(call->target.get()), args);
