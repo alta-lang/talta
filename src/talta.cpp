@@ -18,6 +18,8 @@ std::string Talta::cTypeNameify(AltaCore::DET::Type* type) {
         return "char";
       case NT::Bool:
         return "unsigned int";
+      case NT::Void:
+        return "void";
       default:
         throw std::runtime_error("ok, wtaf.");
     }
