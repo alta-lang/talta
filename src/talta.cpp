@@ -1,13 +1,19 @@
 #include "../include/talta.hpp"
 #include "../include/talta/util.hpp"
 
-std::string Talta::cTypeNameify(AltaCore::DET::Type* type) {
+namespace Talta {
+  std::map<std::string, std::vector<std::string>> moduleIncludes;
+  std::unordered_map<std::string, bool> varargTable;
+};
+
+std::string Talta::cTypeNameify(AltaCore::DET::Type* type, bool mangled) {
   using NT = AltaCore::DET::NativeType;
   if (type->isFunction) {
     std::string result = "_Alta_func_ptr_" + mangleType(type->returnType.get());
-    for (auto& [name, param]: type->parameters) {
+    for (auto& [name, param, isVariable, id]: type->parameters) {
       result += '_';
-      result += mangleType(param.get());
+      auto& target = isVariable ? param->point() : param;
+      result += mangleType(target.get());
     }
     return result;
   } else if (type->isNative) {
@@ -17,7 +23,7 @@ std::string Talta::cTypeNameify(AltaCore::DET::Type* type) {
       case NT::Byte:
         return "char";
       case NT::Bool:
-        return "unsigned int";
+        return mangled ? "unsigned_int" : "unsigned int";
       case NT::Void:
         return "void";
       default:
@@ -44,7 +50,7 @@ std::string Talta::mangleType(AltaCore::DET::Type* type) {
     }
   }
 
-  mangled += cTypeNameify(type);
+  mangled += cTypeNameify(type, true);
 
   return mangled;
 };
@@ -62,6 +68,7 @@ std::string Talta::escapeName(std::string name) {
    * `_5_` is reserved for version delimitation
    * `_6_` is reserved for version prerelease delimination
    * `_7_` is reserved for version build information delimination
+   * `_8_` is reserved for variable function parameter type separation
    */
 
   for (size_t i = 0; i < name.size(); i++) {
@@ -141,8 +148,8 @@ std::string Talta::mangleName(AltaCore::DET::ScopeItem* item, bool fullName) {
     
     if (!isLiteral) {
       itemName = escapeName(itemName);
-      for (auto& [name, type]: func->parameters) {
-        itemName += "_1_" + mangleType(type.get());
+      for (auto& [name, type, isVariable, id]: func->parameters) {
+        itemName += ((isVariable) ? "_8_" : "_1_") + mangleType(type.get());
       }
     }
   } else if (nodeType == NodeType::Variable) {
@@ -211,21 +218,24 @@ void Talta::CTranspiler::headerPredeclaration(std::string def, std::string mangl
   header.insertPreprocessorDefinition("_DEFINED_" + def);
 };
 
-void Talta::CTranspiler::defineFunctionalType(std::shared_ptr<AltaCore::DET::Type> type) {
+void Talta::CTranspiler::defineFunctionalType(std::shared_ptr<AltaCore::DET::Type> type, bool inHeader) {
   if (!type->isFunction) return;
+
+  auto& target = (inHeader ? header : source);
 
   auto name = cTypeNameify(type.get());
   auto mods = convertTypeModifiers(type->modifiers);
 
   auto def = "_ALTA_FUNC_PTR_" + name.substr(15);
-  source.insertPreprocessorConditional("!defined(" + def + ")");
-  source.insertPreprocessorDefinition(def);
+  target.insertPreprocessorConditional("!defined(" + def + ")");
+  target.insertPreprocessorDefinition(def);
   std::vector<std::shared_ptr<Ceetah::AST::Type>> cParams;
-  for (auto& [name, param]: type->parameters) {
-    cParams.push_back(transpileType(param.get()));
+  for (auto& [name, param, isVariable, id]: type->parameters) {
+    auto& target = isVariable ? param->point() : param;
+    cParams.push_back(transpileType(target.get()));
   }
-  source.insertTypeDefinition(name, source.createType(transpileType(type->returnType.get()), cParams, mods));
-  source.exitInsertionPoint();
+  target.insertTypeDefinition(name, target.createType(transpileType(type->returnType.get()), cParams, mods));
+  target.exitInsertionPoint();
 };
 
 std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore::AST::Node* node) {
@@ -237,14 +247,27 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
   if (nodeType == AltaNodeType::FunctionDefinitionNode) {
     auto aFunc = dynamic_cast<AAST::FunctionDefinitionNode*>(node);
 
+    if (!aFunc->$function->isExport) {
+      for (auto& hoistedType: aFunc->$function->publicHoistedFunctionalTypes) {
+        defineFunctionalType(hoistedType);
+      }
+    }
+
     for (auto& hoistedType: aFunc->$function->hoistedFunctionalTypes) {
       defineFunctionalType(hoistedType);
     }
 
     auto mangledFuncName = mangleName(aFunc->$function.get());
     std::vector<std::tuple<std::string, std::shared_ptr<CAST::Type>>> cParams;
-    for (auto& var: aFunc->$function->parameterVariables) {
-      cParams.push_back({ mangleName(var.get()), transpileType(var->type.get()) });
+    for (size_t i = 0; i < aFunc->$function->parameterVariables.size(); i++) {
+      auto& var = aFunc->$function->parameterVariables[i];
+      auto& param = aFunc->parameters[i];
+      auto type = (param->isVariable) ? param->type->$type->point() : param->type->$type;
+      auto mangled = mangleName(var.get());
+      cParams.push_back({ (param->isVariable ? "_Alta_array_" : "") + mangled, transpileType(type.get()) });
+      if (param->isVariable) {
+        cParams.push_back({ "_Alta_array_length_" + mangled, size_tType });
+      }
     }
     auto returnType = transpileType(aFunc->$function->returnType.get());
     
@@ -254,11 +277,16 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     }
     source.exitInsertionPoint();
 
-    auto mod = AltaCore::Util::getModule(aFunc->$function->parentScope.lock().get()).lock();
-    auto mangledModName = mangleName(mod.get());
-    headerPredeclaration("_ALTA_FUNCTION_" + mangledFuncName, mangledModName);
-    header.insertFunctionDeclaration(mangledFuncName, cParams, returnType);
-    header.exitInsertionPoint();
+    if (aFunc->$function->isExport) {
+      for (auto& hoistedType: aFunc->$function->publicHoistedFunctionalTypes) {
+        defineFunctionalType(hoistedType, true);
+      }
+      auto mod = AltaCore::Util::getModule(aFunc->$function->parentScope.lock().get()).lock();
+      auto mangledModName = mangleName(mod.get());
+      headerPredeclaration("_ALTA_FUNCTION_" + mangledFuncName, mangledModName);
+      header.insertFunctionDeclaration(mangledFuncName, cParams, returnType);
+      header.exitInsertionPoint();
+    }
   } else if (nodeType == AltaNodeType::ExpressionStatement) {
     auto exprStmt = dynamic_cast<AAST::ExpressionStatement*>(node);
     auto expr = transpile(exprStmt->expression.get());
@@ -354,8 +382,27 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
   } else if (nodeType == AltaNodeType::FunctionCallExpression) {
     auto call = dynamic_cast<AAST::FunctionCallExpression*>(node);
     std::vector<std::shared_ptr<CAST::Expression>> args;
-    for (auto& arg: call->$adjustedArguments) {
-      args.push_back(transpile(arg.get()));
+    for (size_t i = 0; i < call->$adjustedArguments.size(); i++) {
+      auto& arg = call->$adjustedArguments[i];
+      if (auto solo = std::get_if<std::shared_ptr<AAST::ExpressionNode>>(&arg)) {
+        args.push_back(transpile((*solo).get()));
+      } else if (auto multi = std::get_if<std::vector<std::shared_ptr<AAST::ExpressionNode>>>(&arg)) {
+        auto [name, targetType, isVariable, id] = call->$targetType->parameters[i];
+        if (varargTable[id]) {
+          for (auto& item: *multi) {
+            args.push_back(transpile(item.get()));
+          }
+        } else {
+          std::vector<std::shared_ptr<CAST::Expression>> arrItems;
+          for (auto& item: *multi) {
+            arrItems.push_back(transpile(item.get()));
+          }
+          auto cType = transpileType(targetType.get());
+          cType->arraySize = SIZE_MAX;
+          args.push_back(source.createArrayLiteral(arrItems, cType));
+          args.push_back(source.createIntegerLiteral((*multi).size()));
+        }
+      }
     }
     return source.createFunctionCall(transpile(call->target.get()), args);
   } else if (nodeType == AltaNodeType::StringLiteralNode) {
@@ -365,6 +412,35 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     auto attr = dynamic_cast<AAST::AttributeStatement*>(node);
     attr->attribute->findAttribute();
     attr->attribute->run();
+  } else if (nodeType == AltaNodeType::BlockNode) {
+    auto block = dynamic_cast<AAST::BlockNode*>(node);
+    source.insertBlock();
+    for (auto& stmt: block->statements) {
+      transpile(stmt.get());
+    }
+    source.exitInsertionPoint();
+  } else if (nodeType == AltaNodeType::ConditionalStatement) {
+    auto cond = dynamic_cast<AAST::ConditionalStatement*>(node);
+
+    source.insertConditionalStatement(transpile(cond->primaryTest.get()));
+    transpile(cond->primaryResult.get());
+
+    for (size_t i = 0; i < cond->alternatives.size(); i++) {
+      auto& [altTest, altResult] = cond->alternatives[i];
+      source.enterConditionalAlternative(i);
+      source.insert(transpile(altTest.get()));
+      transpile(altResult.get());
+    }
+
+    if (cond->finalResult) {
+      source.enterConditionalUltimatum();
+      transpile(cond->finalResult.get());
+    }
+
+    source.exitInsertionPoint();
+  } else if (nodeType == AltaNodeType::ConditionalExpression) {
+    auto cond = dynamic_cast<AAST::ConditionalExpression*>(node);
+    return source.createTernaryOperation(transpile(cond->test.get()), transpile(cond->primaryResult.get()), transpile(cond->secondaryResult.get()));
   }
   return nullptr;
 };
@@ -374,16 +450,24 @@ void Talta::CTranspiler::transpile(std::shared_ptr<AltaCore::AST::RootNode> alta
   source = Ceetah::Builder(cRoot);
   header = Ceetah::Builder(hRoot);
 
-  AltaCore::Attributes::registerAttribute({ "CTranspiler", "include" }, {}, [&](std::shared_ptr<AltaCore::AST::Node> target, std::vector<AltaCore::Attributes::AttributeArgument> args) -> void {
-    if (args.size() == 0) return;
-    if (!args[0].isString) return;
-    header.insertPreprocessorInclusion(args[0].string, Ceetah::AST::InclusionType::System);
-  }, altaRoot->$module->path.toString());
+  auto mangledModuleName = mangleName(altaRoot->$module.get());
+
+  header.insertPreprocessorInclusion("_ALTA_RUNTIME_COMMON_HEADER_" + mangledModuleName, Ceetah::AST::InclusionType::Computed);
+  
+  header.insertPreprocessorConditional("!defined(_ALTA_MODULE_HEADER_" + mangledModuleName + ")");
+  header.insertPreprocessorDefinition("_ALTA_MODULE_HEADER_" + mangledModuleName);
+
+  for (auto& incl: moduleIncludes[altaRoot->$module->path.toString()]) {
+    header.insertPreprocessorInclusion(incl, Ceetah::AST::InclusionType::System);
+  }
 
   for (auto& stmt: altaRoot->statements) {
     transpile(stmt.get());
   }
-  header.insertPreprocessorUndefinition("_ALTA_MODULE_ALL_" + mangleName(altaRoot->$module.get()));
+
+  header.exitInsertionPoint();
+
+  header.insertPreprocessorUndefinition("_ALTA_MODULE_ALL_" + mangledModuleName);
 };
 
 std::map<std::string, std::tuple<std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<AltaCore::DET::Module>>> Talta::recursivelyTranspileToC(std::shared_ptr<AltaCore::AST::RootNode> altaRoot, CTranspiler* transpiler) {
@@ -409,4 +493,19 @@ std::map<std::string, std::tuple<std::shared_ptr<Ceetah::AST::RootNode>, std::sh
   }
 
   return results;
+};
+
+void Talta::registerAttributes(AltaCore::Filesystem::Path modulePath) {
+  AltaCore::Attributes::registerAttribute({ "CTranspiler", "include" }, {}, [=](std::shared_ptr<AltaCore::AST::Node> target, std::vector<AltaCore::Attributes::AttributeArgument> args) -> void {
+    if (args.size() == 0) return;
+    if (!args[0].isString) return;
+    moduleIncludes[modulePath.toString()].push_back(args[0].string);
+  }, modulePath.toString());
+  AltaCore::Attributes::registerAttribute({ "CTranspiler", "vararg" }, {
+    AltaCore::AST::NodeType::Parameter,
+  }, [=](std::shared_ptr<AltaCore::AST::Node> target, std::vector<AltaCore::Attributes::AttributeArgument> args) -> void {
+    auto param = std::dynamic_pointer_cast<AltaCore::AST::Parameter>(target);
+    if (!param) throw std::runtime_error("target was not of the expected type");
+    varargTable[param->id] = true;
+  }, modulePath.toString());
 };

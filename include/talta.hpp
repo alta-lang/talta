@@ -5,10 +5,12 @@
 #include <ceetah.hpp>
 #include <vector>
 #include <tuple>
+#include <map>
+#include <unordered_map>
 
 namespace Talta {
   std::string escapeName(std::string name);
-  std::string cTypeNameify(AltaCore::DET::Type* type);
+  std::string cTypeNameify(AltaCore::DET::Type* type, bool mangled = false);
   std::string mangleType(AltaCore::DET::Type* type);
   std::string mangleName(AltaCore::DET::Scope* scope, bool fullName = true);
   std::string mangleName(AltaCore::DET::Module* mod, bool fullName = true);
@@ -16,18 +18,26 @@ namespace Talta {
   std::string headerMangle(AltaCore::DET::Module* item, bool fullName = true);
   std::string headerMangle(AltaCore::DET::ScopeItem* item, bool fullName = true);
 
+  extern std::map<std::string, std::vector<std::string>> moduleIncludes;
+  extern std::unordered_map<std::string, bool> varargTable;
+
+  void registerAttributes(AltaCore::Filesystem::Path modulePath);
+
   class CTranspiler {
     private:
       std::shared_ptr<Ceetah::AST::Expression> transpile(AltaCore::AST::Node* node);
       std::shared_ptr<Ceetah::AST::Type> transpileType(AltaCore::DET::Type* type);
       void headerPredeclaration(std::string def, std::string mangledModuleName);
       std::vector<uint8_t> convertTypeModifiers(std::vector<uint8_t> altaModifiers);
-      void defineFunctionalType(std::shared_ptr<AltaCore::DET::Type> type);
+      void defineFunctionalType(std::shared_ptr<AltaCore::DET::Type> type, bool inHeader = false);
     public:
       std::shared_ptr<Ceetah::AST::RootNode> cRoot = nullptr;
       std::shared_ptr<Ceetah::AST::RootNode> hRoot = nullptr;
       Ceetah::Builder source = Ceetah::Builder(cRoot);
       Ceetah::Builder header = Ceetah::Builder(hRoot);
+    protected:
+      std::shared_ptr<Ceetah::AST::Type> size_tType = source.createType("size_t", { { Ceetah::AST::TypeModifierFlag::Constant } });
+    public:
       
       void transpile(std::shared_ptr<AltaCore::AST::RootNode> altaRoot);
   };
