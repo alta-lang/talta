@@ -57,7 +57,7 @@ std::string Talta::mangleType(AltaCore::DET::Type* type) {
 
 std::string Talta::escapeName(std::string name) {
   std::string escaped;
-  
+
   /**
    * Escapes 0-30 are reserved for internal use (since they're control characters in ASCII anyways).
    * `_0_` is reserved for scope item name separation
@@ -145,7 +145,7 @@ std::string Talta::mangleName(AltaCore::DET::ScopeItem* item, bool fullName) {
     auto func = dynamic_cast<DET::Function*>(item);
     itemName = func->name;
     isLiteral = func->isLiteral;
-    
+
     if (!isLiteral) {
       itemName = escapeName(itemName);
       for (auto& [name, type, isVariable, id]: func->parameters) {
@@ -270,7 +270,7 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
       }
     }
     auto returnType = transpileType(aFunc->$function->returnType.get());
-    
+
     source.insertFunctionDefinition(mangledFuncName, cParams, returnType);
     for (auto& stmt: aFunc->body->statements) {
       transpile(stmt.get());
@@ -384,9 +384,9 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     std::vector<std::shared_ptr<CAST::Expression>> args;
     for (size_t i = 0; i < call->$adjustedArguments.size(); i++) {
       auto& arg = call->$adjustedArguments[i];
-      if (auto solo = std::get_if<std::shared_ptr<AAST::ExpressionNode>>(&arg)) {
+      if (auto solo = ALTACORE_VARIANT_GET_IF<std::shared_ptr<AAST::ExpressionNode>>(&arg)) {
         args.push_back(transpile((*solo).get()));
-      } else if (auto multi = std::get_if<std::vector<std::shared_ptr<AAST::ExpressionNode>>>(&arg)) {
+      } else if (auto multi = ALTACORE_VARIANT_GET_IF<std::vector<std::shared_ptr<AAST::ExpressionNode>>>(&arg)) {
         auto [name, targetType, isVariable, id] = call->$targetType->parameters[i];
         if (varargTable[id]) {
           for (auto& item: *multi) {
@@ -453,7 +453,7 @@ void Talta::CTranspiler::transpile(std::shared_ptr<AltaCore::AST::RootNode> alta
   auto mangledModuleName = mangleName(altaRoot->$module.get());
 
   header.insertPreprocessorInclusion("_ALTA_RUNTIME_COMMON_HEADER_" + mangledModuleName, Ceetah::AST::InclusionType::Computed);
-  
+
   header.insertPreprocessorConditional("!defined(_ALTA_MODULE_HEADER_" + mangledModuleName + ")");
   header.insertPreprocessorDefinition("_ALTA_MODULE_HEADER_" + mangledModuleName);
 
