@@ -12,7 +12,7 @@ std::string Talta::cTypeNameify(AltaCore::DET::Type* type, bool mangled) {
     std::string result = "_Alta_func_ptr_" + mangleType(type->returnType.get());
     for (auto& [name, param, isVariable, id]: type->parameters) {
       result += '_';
-      auto& target = isVariable ? param->point() : param;
+      auto target = isVariable ? param->point() : param;
       result += mangleType(target.get());
     }
     return result;
@@ -231,7 +231,7 @@ void Talta::CTranspiler::defineFunctionalType(std::shared_ptr<AltaCore::DET::Typ
   target.insertPreprocessorDefinition(def);
   std::vector<std::shared_ptr<Ceetah::AST::Type>> cParams;
   for (auto& [name, param, isVariable, id]: type->parameters) {
-    auto& target = isVariable ? param->point() : param;
+    auto target = isVariable ? param->point() : param;
     cParams.push_back(transpileType(target.get()));
   }
   target.insertTypeDefinition(name, target.createType(transpileType(type->returnType.get()), cParams, mods));
