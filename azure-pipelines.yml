@@ -16,13 +16,13 @@ jobs:
     displayName: "Configure project with CMake (for release)"
     condition: contains(variables['Build.SourceBranch'], 'refs/tags/')
     inputs:
-      cmakeArgs: "-DCMAKE_C_COMPILER=/usr/bin/gcc-7 -DCMAKE_CXX_COMPILER=/usr/bin/g++-7 -DCMAKE_BUILD_TYPE=Release .."
+      cmakeArgs: '-DCMAKE_C_COMPILER=/usr/bin/gcc-7 -DCMAKE_CXX_COMPILER=/usr/bin/g++-7 -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$(Build.ArtifactStagingDirectory)" ..'
   # otherwise, build for debug
   - task: CMake@1
     displayName: "Configure project with CMake (for debug)"
     condition: not(contains(variables['Build.SourceBranch'], 'refs/tags/'))
     inputs:
-      cmakeArgs: "-DCMAKE_C_COMPILER=/usr/bin/gcc-7 -DCMAKE_CXX_COMPILER=/usr/bin/g++-7 -DCMAKE_BUILD_TYPE=Debug .."
+      cmakeArgs: '-DCMAKE_C_COMPILER=/usr/bin/gcc-7 -DCMAKE_CXX_COMPILER=/usr/bin/g++-7 -DCMAKE_BUILD_TYPE=Debug -DCMAKE_INSTALL_PREFIX="$(Build.ArtifactStagingDirectory)" ..'
 
    # build it
   - task: CMake@1
@@ -30,13 +30,11 @@ jobs:
     inputs:
       cmakeArgs: "--build ."
 
-  # copy the artifacts
-  - task: CopyFiles@2
-    displayName: "Copy the artifacts to artifact directory"
+  # "install" it
+  - task: CMake@1
+    displayName: "Build project"
     inputs:
-      sourceFolder: "build"
-      contents: "**/*"
-      targetFolder: '$(Build.ArtifactStagingDirectory)'
+      cmakeArgs: "--build . --target install"
 
   - task: ArchiveFiles@2
     condition: contains(variables['Build.SourceBranch'], 'refs/tags/')
@@ -70,7 +68,7 @@ jobs:
   - task: CMake@1
     displayName: "Configure project with CMake"
     inputs:
-      cmakeArgs: ".."
+      cmakeArgs: '-DCMAKE_INSTALL_PREFIX="$(Build.ArtifactStagingDirectory)" ..'
 
   # if this is a tagged commit, build for release
   # note: Visual Studio requires the build configuration type at build time,
@@ -87,22 +85,11 @@ jobs:
     inputs:
       cmakeArgs: "--build . --config Debug"
 
-  # [debug] copy the artifacts
-  - task: CopyFiles@2
-    displayName: "Copy the artifacts to artifact directory (for debug)"
-    condition: not(contains(variables['Build.SourceBranch'], 'refs/tags/'))
+  # "install" it
+  - task: CMake@1
+    displayName: "Build project"
     inputs:
-      sourceFolder: "build\\**\\Debug"
-      contents: "**\\*"
-      targetFolder: '$(Build.ArtifactStagingDirectory)'
-  # [release] copy the artifacts
-  - task: CopyFiles@2
-    displayName: "Copy the artifacts to artifact directory (for release)"
-    condition: contains(variables['Build.SourceBranch'], 'refs/tags/')
-    inputs:
-      sourceFolder: "build\\**\\Release"
-      contents: "**\\*"
-      targetFolder: '$(Build.ArtifactStagingDirectory)'
+      cmakeArgs: "--build . --target install"
 
   - task: ArchiveFiles@2
     condition: contains(variables['Build.SourceBranch'], 'refs/tags/')
@@ -136,14 +123,14 @@ jobs:
     displayName: "Configure project with CMake (for release)"
     condition: contains(variables['Build.SourceBranch'], 'refs/tags/')
     inputs:
-      cmakeArgs: "-DCMAKE_BUILD_TYPE=Release .."
+      cmakeArgs: '-DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$(Build.ArtifactStagingDirectory)" ..'
 
   # otherwise, build for debug
   - task: CMake@1
     displayName: "Configure project with CMake (for debug)"
     condition: not(contains(variables['Build.SourceBranch'], 'refs/tags/'))
     inputs:
-      cmakeArgs: "-DCMAKE_BUILD_TYPE=Debug .."
+      cmakeArgs: '-DCMAKE_BUILD_TYPE=Debug -DCMAKE_INSTALL_PREFIX="$(Build.ArtifactStagingDirectory)" ..'
 
   # build it
   - task: CMake@1
@@ -151,13 +138,11 @@ jobs:
     inputs:
       cmakeArgs: "--build ."
 
-  # copy the artifacts
-  - task: CopyFiles@2
-    displayName: "Copy the artifacts to artifact directory"
+  # "install" it
+  - task: CMake@1
+    displayName: "Build project"
     inputs:
-      sourceFolder: "build"
-      contents: "**/*"
-      targetFolder: '$(Build.ArtifactStagingDirectory)'
+      cmakeArgs: "--build . --target install"
 
   - task: ArchiveFiles@2
     condition: contains(variables['Build.SourceBranch'], 'refs/tags/')
