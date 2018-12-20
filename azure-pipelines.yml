@@ -30,13 +30,13 @@ jobs:
     inputs:
       cmakeArgs: "--build ."
 
-  # copy the executable (and any related products)
+  # copy the artifacts
   - task: CopyFiles@2
-    displayName: "Copy the executable (and related files) to artifact directory"
+    displayName: "Copy the artifacts to artifact directory"
     inputs:
-      sourceFolder: "build/bin"
-      contents: "*"
-      targetFolder: '$(Build.ArtifactStagingDirectory)/bin'
+      sourceFolder: "build"
+      contents: "**/*"
+      targetFolder: '$(Build.ArtifactStagingDirectory)'
 
   - task: ArchiveFiles@2
     condition: contains(variables['Build.SourceBranch'], 'refs/tags/')
@@ -87,21 +87,21 @@ jobs:
     inputs:
       cmakeArgs: "--build . --config Debug"
 
-  # [debug] copy the executable (and any related products)
+  # [debug] copy the artifacts
   - task: CopyFiles@2
-    displayName: "Copy the executable (and related files) to artifact directory (for release)"
+    displayName: "Copy the artifacts to artifact directory (for debug)"
     condition: not(contains(variables['Build.SourceBranch'], 'refs/tags/'))
     inputs:
-      sourceFolder: "build\\bin\\Debug"
-      contents: "*"
+      sourceFolder: "build\\**\\Debug"
+      contents: "**\\*"
       targetFolder: '$(Build.ArtifactStagingDirectory)'
-  # [release] copy the executable (and any related products)
+  # [release] copy the artifacts
   - task: CopyFiles@2
-    displayName: "Copy the executable (and related files) to artifact directory (for release)"
+    displayName: "Copy the artifacts to artifact directory (for release)"
     condition: contains(variables['Build.SourceBranch'], 'refs/tags/')
     inputs:
-      sourceFolder: "build\\bin\\Release"
-      contents: "*"
+      sourceFolder: "build\\**\\Release"
+      contents: "**\\*"
       targetFolder: '$(Build.ArtifactStagingDirectory)'
 
   - task: ArchiveFiles@2
@@ -151,13 +151,13 @@ jobs:
     inputs:
       cmakeArgs: "--build ."
 
-  # copy the executable (and any related products)
+  # copy the artifacts
   - task: CopyFiles@2
-    displayName: "Copy the executable (and related files) to artifact directory"
+    displayName: "Copy the artifacts to artifact directory"
     inputs:
-      sourceFolder: "build/bin"
-      contents: "*"
-      targetFolder: '$(Build.ArtifactStagingDirectory)/bin'
+      sourceFolder: "build"
+      contents: "**/*"
+      targetFolder: '$(Build.ArtifactStagingDirectory)'
 
   - task: ArchiveFiles@2
     condition: contains(variables['Build.SourceBranch'], 'refs/tags/')
