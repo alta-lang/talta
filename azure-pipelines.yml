@@ -32,7 +32,7 @@ jobs:
 
   # "install" it
   - task: CMake@1
-    displayName: "Build project"
+    displayName: "Install project to artifact staging directory"
     inputs:
       cmakeArgs: "--build . --target install"
 
@@ -87,7 +87,7 @@ jobs:
 
   # "install" it
   - task: CMake@1
-    displayName: "Build project"
+    displayName: "Install project to artifact staging directory"
     inputs:
       cmakeArgs: "--build . --target install"
 
@@ -140,7 +140,7 @@ jobs:
 
   # "install" it
   - task: CMake@1
-    displayName: "Build project"
+    displayName: "Install project to artifact staging directory"
     inputs:
       cmakeArgs: "--build . --target install"
 
