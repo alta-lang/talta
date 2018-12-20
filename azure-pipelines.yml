@@ -1,0 +1,183 @@
+jobs:
+- job: Linux
+  pool:
+    vmImage: "ubuntu-16.04"
+  steps:
+  # set up GCC 7 (required to build because we use C++17)
+  # and install uuid-dev (dependency of crossguid)
+  - script: |
+      sudo add-apt-repository ppa:ubuntu-toolchain-r/test -y
+      sudo apt-get update
+      sudo apt-get install -y gcc-7 g++-7 uuid-dev
+    displayName: "Install GCC 7 and uuid-dev"
+
+  # if this is a tagged commit, build for release
+  - task: CMake@1
+    displayName: "Configure project with CMake (for release)"
+    condition: contains(variables['Build.SourceBranch'], 'refs/tags/')
+    inputs:
+      cmakeArgs: "-DCMAKE_C_COMPILER=/usr/bin/gcc-7 -DCMAKE_CXX_COMPILER=/usr/bin/g++-7 -DCMAKE_BUILD_TYPE=Release .."
+  # otherwise, build for debug
+  - task: CMake@1
+    displayName: "Configure project with CMake (for debug)"
+    condition: not(contains(variables['Build.SourceBranch'], 'refs/tags/'))
+    inputs:
+      cmakeArgs: "-DCMAKE_C_COMPILER=/usr/bin/gcc-7 -DCMAKE_CXX_COMPILER=/usr/bin/g++-7 -DCMAKE_BUILD_TYPE=Debug .."
+
+   # build it
+  - task: CMake@1
+    displayName: "Build project"
+    inputs:
+      cmakeArgs: "--build ."
+
+  # copy the executable (and any related products)
+  - task: CopyFiles@2
+    displayName: "Copy the executable (and related files) to artifact directory"
+    inputs:
+      sourceFolder: "build/bin"
+      contents: "*"
+      targetFolder: '$(Build.ArtifactStagingDirectory)/bin'
+
+  - task: ArchiveFiles@2
+    condition: contains(variables['Build.SourceBranch'], 'refs/tags/')
+    displayName: "Create a release archive"
+    inputs:
+      rootFolderOrFile: '$(Build.ArtifactStagingDirectory)'
+      includeRootFolder: false
+      archiveType: 'tar'
+      tarCompression: 'xz'
+      archiveFile: '$(Build.ArtifactStagingDirectory)/talta-linux-amd64.tar.xz'
+
+  - bash: |
+      shopt -s extglob
+      rm -r !(talta-linux-amd64.tar.xz)
+    workingDirectory: $(Build.ArtifactStagingDirectory)
+    condition: contains(variables['Build.SourceBranch'], 'refs/tags/')
+    displayName: "Remove unnecessary files (for release)"
+
+  # publish the relevant artifacts
+  - task: PublishPipelineArtifact@0
+    displayName: "Publish the relevant artifacts"
+    inputs:
+      artifactName: "talta-linux-amd64"
+      targetPath: $(Build.ArtifactStagingDirectory)
+
+- job: Windows
+  pool:
+    vmImage: "vs2017-win2016"
+  steps:
+  # configure it
+  - task: CMake@1
+    displayName: "Configure project with CMake"
+    inputs:
+      cmakeArgs: ".."
+
+  # if this is a tagged commit, build for release
+  # note: Visual Studio requires the build configuration type at build time,
+  #       not configuration time (unlike Make on Linux and macOS)
+  - task: CMake@1
+    displayName: "Build project (for release)"
+    condition: contains(variables['Build.SourceBranch'], 'refs/tags/')
+    inputs:
+      cmakeArgs: "--build . --config Release"
+  # otherwise, build for debug
+  - task: CMake@1
+    displayName: "Build project (for debug)"
+    condition: not(contains(variables['Build.SourceBranch'], 'refs/tags/'))
+    inputs:
+      cmakeArgs: "--build . --config Debug"
+
+  # [debug] copy the executable (and any related products)
+  - task: CopyFiles@2
+    displayName: "Copy the executable (and related files) to artifact directory (for release)"
+    condition: not(contains(variables['Build.SourceBranch'], 'refs/tags/'))
+    inputs:
+      sourceFolder: "build\\bin\\Debug"
+      contents: "*"
+      targetFolder: '$(Build.ArtifactStagingDirectory)'
+  # [release] copy the executable (and any related products)
+  - task: CopyFiles@2
+    displayName: "Copy the executable (and related files) to artifact directory (for release)"
+    condition: contains(variables['Build.SourceBranch'], 'refs/tags/')
+    inputs:
+      sourceFolder: "build\\bin\\Release"
+      contents: "*"
+      targetFolder: '$(Build.ArtifactStagingDirectory)'
+
+  - task: ArchiveFiles@2
+    condition: contains(variables['Build.SourceBranch'], 'refs/tags/')
+    displayName: "Create a release archive"
+    inputs:
+      rootFolderOrFile: '$(Build.ArtifactStagingDirectory)'
+      includeRootFolder: false
+      archiveType: 'zip'
+      archiveFile: '$(Build.ArtifactStagingDirectory)/talta-win64.zip'
+
+  - bash: |
+      shopt -s extglob
+      rm -r !(talta-win64.zip)
+    workingDirectory: $(Build.ArtifactStagingDirectory)
+    condition: contains(variables['Build.SourceBranch'], 'refs/tags/')
+    displayName: "Remove unnecessary files (for release)"
+
+  # publish the relevant artifacts
+  - task: PublishPipelineArtifact@0
+    displayName: "Publish the relevant artifacts"
+    inputs:
+      artifactName: "talta-win64"
+      targetPath: $(Build.ArtifactStagingDirectory)
+
+- job: macOS
+  pool:
+    vmImage: "macOS-10.13"
+  steps:
+  # if this is a tagged commit, build for release
+  - task: CMake@1
+    displayName: "Configure project with CMake (for release)"
+    condition: contains(variables['Build.SourceBranch'], 'refs/tags/')
+    inputs:
+      cmakeArgs: "-DCMAKE_BUILD_TYPE=Release .."
+
+  # otherwise, build for debug
+  - task: CMake@1
+    displayName: "Configure project with CMake (for debug)"
+    condition: not(contains(variables['Build.SourceBranch'], 'refs/tags/'))
+    inputs:
+      cmakeArgs: "-DCMAKE_BUILD_TYPE=Debug .."
+
+  # build it
+  - task: CMake@1
+    displayName: "Build project"
+    inputs:
+      cmakeArgs: "--build ."
+
+  # copy the executable (and any related products)
+  - task: CopyFiles@2
+    displayName: "Copy the executable (and related files) to artifact directory"
+    inputs:
+      sourceFolder: "build/bin"
+      contents: "*"
+      targetFolder: '$(Build.ArtifactStagingDirectory)/bin'
+
+  - task: ArchiveFiles@2
+    condition: contains(variables['Build.SourceBranch'], 'refs/tags/')
+    displayName: "Create a release archive"
+    inputs:
+      rootFolderOrFile: '$(Build.ArtifactStagingDirectory)'
+      includeRootFolder: false
+      archiveType: 'zip'
+      archiveFile: '$(Build.ArtifactStagingDirectory)/talta-macos.zip'
+
+  - bash: |
+      shopt -s extglob
+      rm -r !(talta-macos.zip)
+    workingDirectory: $(Build.ArtifactStagingDirectory)
+    condition: contains(variables['Build.SourceBranch'], 'refs/tags/')
+    displayName: "Remove unnecessary files (for release)"
+
+  # publish the relevant artificats
+  - task: PublishPipelineArtifact@0
+    displayName: "Publish the relevant artifacts"
+    inputs:
+      artifactName: "talta-macos"
+      targetPath: $(Build.ArtifactStagingDirectory)
