@@ -4,11 +4,31 @@ All the changes for Alta's primary (and currently only) backend, the C transpile
 This project follows [semantic versioning](https://semver.org).
 
 ## [Unreleased]
+Nothing yet.
+
+## [0.8.0] - 2018-12-20
+### Added
+  * `void` type support added
+  * New `CTranspiler.vararg` attribute for parameters
+    * This attribute lets Talta know that the annotated parameter is a C-style vararg parameter and that it should format arguments for this parameter accordingly
+    * This is used, for example, in the declaration for `printf`:
+      * `declare function printf(string: ptr byte, `**`@CTranspiler.vararg`**` data: any...): int`
+      * This tells Alta that instead of passing arguments to printf like this:
+        * `printf("some %d string", (any[]){ 3 })`
+        * Which, by the way, is invalid C code because of the `any` type
+      * ...it should pass them like this:
+        * `printf("some %d string", 3)`
+### Changed
+  * Attributes are now executed at detail time
+    * **Note**: this change was made in order to comply with the corresponding change in AltaCore
+    * `CTranspiler.include` has been updated accordingly, and the new attribute (`CTranspiler.vararg`) also implements this behavior
 ### Updated
-  * [AltaCore fbdb646](https://github.com/alta-lang/alta-core/blob/fbdb646a07051b2f929f84647e707f61cf9d0ff1/CHANGELOG.md)
+  * [AltaCore v0.10.0](https://github.com/alta-lang/alta-core/blob/v0.10.0/CHANGELOG.md#0100---2018-12-20)
+  * [Ceetah v0.5.0](https://github.com/alta-lang/ceetah/blob/v0.5.0/CHANGELOG.md#050---2018-12-20)
 ### Additional Release Notes
   * We now have a policy of changelog modularization, and this is in effect for the various subprojects
     * In other words, refer to the changelogs of updated dependencies for additional changes
+  * CI integration has been added for automated builds (and automated testing once tests are added)
 
 ## [0.7.1] - 2018-12-03
 ### Changed

@@ -1,3 +1,9 @@
+trigger:
+- master
+- staging-*
+- dev-*
+- refs/tags/*
+
 jobs:
 - job: Linux
   pool:

@@ -364,7 +364,8 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     auto binOp = dynamic_cast<AAST::BinaryOperation*>(node);
     // for now, we can just cast from one to the other, since they're
     // identical. however, if Alta ever introduces non-C binary operators,
-    // this will need to be changed. please take note of that!
+    // or changes up the order of its OperatorType enum, this
+    // will need to be changed. please take note of that!
     auto cOpType = (CAST::OperatorType)binOp->type;
     return source.createBinaryOperation(cOpType, transpile(binOp->left.get()), transpile(binOp->right.get()));
   } else if (nodeType == AltaNodeType::ImportStatement) {
