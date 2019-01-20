@@ -619,6 +619,12 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
   } else if (nodeType == AAST::NodeType::ClassMethodDefinitionStatement) {
     auto method = dynamic_cast<AAST::ClassMethodDefinitionStatement*>(node);
     transpile(method->funcDef.get());
+  } else if (nodeType == AAST::NodeType::PointerExpression) {
+    auto ptr = dynamic_cast<AAST::PointerExpression*>(node);
+    return source.createPointer(transpile(ptr->target.get()));
+  } else if (nodeType == AAST::NodeType::DereferenceExpression) {
+    auto deref = dynamic_cast<AAST::DereferenceExpression*>(node);
+    return source.createDereference(transpile(deref->target.get()));
   }
   return nullptr;
 };
