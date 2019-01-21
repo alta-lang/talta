@@ -625,6 +625,11 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
   } else if (nodeType == AAST::NodeType::DereferenceExpression) {
     auto deref = dynamic_cast<AAST::DereferenceExpression*>(node);
     return source.createDereference(transpile(deref->target.get()));
+  } else if (nodeType == AAST::NodeType::WhileLoopStatement) {
+    auto loop = dynamic_cast<AAST::WhileLoopStatement*>(node);
+    source.insertWhileLoop(transpile(loop->test.get()));
+    transpile(loop->body.get());
+    source.exitInsertionPoint();
   }
   return nullptr;
 };
