@@ -476,6 +476,10 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
   } else if (nodeType == AltaNodeType::ClassDefinitionNode) {
     auto aClass = dynamic_cast<AAST::ClassDefinitionNode*>(node);
 
+    for (auto& hoistedType: aClass->$klass->hoistedFunctionalTypes) {
+      defineFunctionalType(hoistedType);
+    }
+
     std::vector<std::pair<std::string, std::shared_ptr<CAST::Type>>> members;
     for (auto item: aClass->$klass->scope->items) {
       if (item->nodeType() == AltaCore::DET::NodeType::Variable && item->name != "this") {
