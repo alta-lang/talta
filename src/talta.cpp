@@ -634,6 +634,9 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     source.insertWhileLoop(transpile(loop->test.get()));
     transpile(loop->body.get());
     source.exitInsertionPoint();
+  } else if (nodeType == AAST::NodeType::CastExpression) {
+    auto cast = dynamic_cast<AAST::CastExpression*>(node);
+    return source.createCast(transpile(cast->target.get()), transpileType(cast->type->$type.get()));
   }
   return nullptr;
 };
