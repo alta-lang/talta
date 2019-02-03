@@ -348,19 +348,23 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     }
   } else if (nodeType == AltaNodeType::Accessor) {
     auto acc = dynamic_cast<AAST::Accessor*>(node);
-    if (!acc->$narrowedTo) {
-      throw std::runtime_error("AHH, this accessor needs to be narrowed!");
-    }
-    if (acc->accessesNamespace) {
-      return source.createFetch(mangleName(acc->$narrowedTo.get()));
-    } else {
-      auto tgt = transpile(acc->target.get());
-      if (acc->$targetType && acc->$targetType->indirectionLevel() > 0) {
-        for (size_t i = 0; i < acc->$targetType->indirectionLevel(); i++) {
-          tgt = source.createDereference(tgt);
+    if (acc->$narrowedTo) {
+      if (acc->accessesNamespace) {
+        return source.createFetch(mangleName(acc->$narrowedTo.get()));
+      } else {
+        auto tgt = transpile(acc->target.get());
+        if (acc->$targetType && acc->$targetType->indirectionLevel() > 0) {
+          for (size_t i = 0; i < acc->$targetType->indirectionLevel(); i++) {
+            tgt = source.createDereference(tgt);
+          }
         }
+        return source.createAccessor(tgt, mangleName(acc->$narrowedTo.get()));
       }
-      return source.createAccessor(tgt, mangleName(acc->$narrowedTo.get()));
+    } else if (acc->$readAccessor) {
+      auto readAccFetch = source.createFetch(mangleName(acc->$readAccessor.get()));
+      return source.createFunctionCall(readAccFetch, { source.createPointer(transpile(acc->target.get())) });
+    } else {
+      throw std::runtime_error("AHH, this accessor needs to be narrowed!");
     }
   } else if (nodeType == AltaNodeType::Fetch) {
     auto fetch = dynamic_cast<AAST::Fetch*>(node);
