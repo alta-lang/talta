@@ -362,7 +362,13 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
       }
     } else if (acc->$readAccessor) {
       auto readAccFetch = source.createFetch(mangleName(acc->$readAccessor.get()));
-      return source.createFunctionCall(readAccFetch, { source.createPointer(transpile(acc->target.get())) });
+      auto selfAlta = acc->target.get();
+      auto self = transpile(selfAlta);
+      auto selfType = AltaCore::DET::Type::getUnderlyingType(selfAlta);
+      for (size_t i = 0; i < selfType->referenceLevel(); i++) {
+        self = source.createDereference(self);
+      }
+      return source.createFunctionCall(readAccFetch, { source.createPointer(self) });
     } else {
       throw std::runtime_error("AHH, this accessor needs to be narrowed!");
     }
@@ -412,12 +418,27 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     auto call = dynamic_cast<AAST::FunctionCallExpression*>(node);
     std::vector<std::shared_ptr<CAST::Expression>> args;
     if (call->$isMethodCall) {
-      args.push_back(source.createPointer(transpile(call->$methodClassTarget.get())));
+      auto selfAlta = call->$methodClassTarget.get();
+      auto self = transpile(selfAlta);
+      auto selfType = AltaCore::DET::Type::getUnderlyingType(selfAlta);
+      for (size_t i = 0; i < selfType->referenceLevel(); i++) {
+        self = source.createDereference(self);
+      }
+      args.push_back(source.createPointer(self));
     }
     for (size_t i = 0; i < call->$adjustedArguments.size(); i++) {
       auto& arg = call->$adjustedArguments[i];
       if (auto solo = ALTACORE_VARIANT_GET_IF<std::shared_ptr<AAST::ExpressionNode>>(&arg)) {
-        args.push_back(transpile((*solo).get()));
+        auto [name, targetType, isVariable, id] = call->$targetType->parameters[i];
+        auto argType = AltaCore::DET::Type::getUnderlyingType((*solo).get());
+        auto target = transpile((*solo).get());
+        for (size_t i = 0; i < argType->referenceLevel(); i++) {
+          target = source.createDereference(target);
+        }
+        for (size_t j = 0; j < targetType->referenceLevel(); j++) {
+          target = source.createPointer(target);
+        }
+        args.push_back(target);
       } else if (auto multi = ALTACORE_VARIANT_GET_IF<std::vector<std::shared_ptr<AAST::ExpressionNode>>>(&arg)) {
         auto [name, targetType, isVariable, id] = call->$targetType->parameters[i];
         if (varargTable[id]) {
@@ -626,6 +647,7 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     return source.createFunctionCall(source.createFetch("_cn_" + mangleName(call->$constructor.get())), args);
   } else if (nodeType == AAST::NodeType::ClassMethodDefinitionStatement) {
     auto method = dynamic_cast<AAST::ClassMethodDefinitionStatement*>(node);
+    header.insertPreprocessorDefinition(headerMangle(method->funcDef->$function.get()));
     transpile(method->funcDef.get());
   } else if (nodeType == AAST::NodeType::PointerExpression) {
     auto ptr = dynamic_cast<AAST::PointerExpression*>(node);
