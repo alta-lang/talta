@@ -362,13 +362,19 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
       }
     } else if (acc->$readAccessor) {
       auto readAccFetch = source.createFetch(mangleName(acc->$readAccessor.get()));
-      auto selfAlta = acc->target.get();
-      auto self = transpile(selfAlta);
-      auto selfType = AltaCore::DET::Type::getUnderlyingType(selfAlta);
-      for (size_t i = 0; i < selfType->referenceLevel(); i++) {
-        self = source.createDereference(self);
+      
+      std::vector<std::shared_ptr<Ceetah::AST::Expression>> args;
+      if (!acc->accessesNamespace) {
+        auto selfAlta = acc->target.get();
+        auto self = transpile(selfAlta);
+        auto selfType = AltaCore::DET::Type::getUnderlyingType(selfAlta);
+        for (size_t i = 0; i < selfType->referenceLevel(); i++) {
+          self = source.createDereference(self);
+        }
+        args.push_back(source.createPointer(self));
       }
-      return source.createFunctionCall(readAccFetch, { source.createPointer(self) });
+      
+      return source.createFunctionCall(readAccFetch, args);
     } else {
       throw std::runtime_error("AHH, this accessor needs to be narrowed!");
     }
@@ -383,7 +389,14 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
         return source.createFetch("_Alta_self");
       }
     }
-    return source.createFetch(mangleName(fetch->$narrowedTo.get()));
+    auto cFetch = source.createFetch(mangleName(fetch->$narrowedTo.get()));
+    if (fetch->$narrowedTo->nodeType() == AltaCore::DET::NodeType::Function) {
+      auto func = std::dynamic_pointer_cast<AltaCore::DET::Function>(fetch->$narrowedTo);
+      if (func->isAccessor) {
+        return source.createFunctionCall(cFetch, {});
+      }
+    }
+    return cFetch;
   } else if (nodeType == AltaNodeType::AssignmentExpression) {
     auto assign = dynamic_cast<AAST::AssignmentExpression*>(node);
     return source.createAssignment(transpile(assign->target.get()), transpile(assign->value.get()));
