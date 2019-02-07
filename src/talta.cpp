@@ -499,12 +499,13 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
       }
     }
     std::shared_ptr<CAST::Expression> result = nullptr;
-    auto refLevel = call->$targetType->referenceLevel();
+    auto refLevel = call->$targetType->returnType->referenceLevel();
     if (call->$isMethodCall) {
       auto acc = std::dynamic_pointer_cast<AAST::Accessor>(call->target);
       result = source.createFunctionCall(source.createFetch(mangleName(acc->$narrowedTo.get())), args);
+    } else {
+      result = source.createFunctionCall(transpile(call->target.get()), args);
     }
-    result = source.createFunctionCall(transpile(call->target.get()), args);
     for (size_t i = 0; i < refLevel; i++) {
       result = source.createDereference(result);
     }
