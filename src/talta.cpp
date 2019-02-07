@@ -310,6 +310,11 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     std::shared_ptr<Ceetah::AST::Expression> expr = nullptr;
     if (retDir->expression != nullptr) {
       expr = transpile(retDir->expression.get());
+      if (retDir->$functionReturnType) {
+        for (size_t i = 0; i < retDir->$functionReturnType->referenceLevel(); i++) {
+          expr = source.createPointer(expr);
+        }
+      }
     }
     source.insertReturnDirective(expr);
   } else if (nodeType == AltaNodeType::IntegerLiteralNode) {
