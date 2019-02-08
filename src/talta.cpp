@@ -711,6 +711,9 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
   } else if (nodeType == AAST::NodeType::CastExpression) {
     auto cast = dynamic_cast<AAST::CastExpression*>(node);
     return source.createCast(transpile(cast->target.get()), transpileType(cast->type->$type.get()));
+  } else if (nodeType == AAST::NodeType::CharacterLiteralNode) {
+    auto lit = dynamic_cast<AAST::CharacterLiteralNode*>(node);
+    return source.createCharacterLiteral(lit->value, lit->escaped);
   }
   return nullptr;
 };
