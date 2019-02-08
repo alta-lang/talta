@@ -215,6 +215,8 @@ std::vector<uint8_t> Talta::CTranspiler::convertTypeModifiers(std::vector<uint8_
     if (mod & (uint8_t)AltaCore::Shared::TypeModifierFlag::Reference) {
       mod &= ~(uint8_t)AltaCore::Shared::TypeModifierFlag::Reference;
       mod |= (uint8_t)Ceetah::AST::TypeModifierFlag::Pointer;
+    } else if (mod >= (uint8_t)AltaCore::Shared::TypeModifierFlag::Signed) {
+      mod = mod >> 1;
     }
   }
 
