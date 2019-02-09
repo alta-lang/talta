@@ -102,6 +102,8 @@ std::string Talta::headerMangle(AltaCore::DET::ScopeItem* item, bool fullName) {
     return "_ALTA_VARIABLE_" + mangleName(item, fullName);
   } else if (nodeType == NodeType::Class) {
     return "_ALTA_CLASS_" + mangleName(item, fullName);
+  } else {
+    return "";
   }
 
   return mangleName(item, fullName);
@@ -456,7 +458,9 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
       header.insertPreprocessorDefinition("_ALTA_MODULE_ALL_" + mangleImportName);
     } else {
       for (auto& item: import->$importedItems) {
-        header.insertPreprocessorDefinition(headerMangle(item.get()));
+        auto def = headerMangle(item.get());
+        if (def.empty()) continue;
+        header.insertPreprocessorDefinition(def);
       }
     }
     header.insertPreprocessorInclusion("_ALTA_MODULE_" + mangledParentName + "_0_INCLUDE_" + mangleImportName, CAST::InclusionType::Computed);
