@@ -25,7 +25,7 @@ namespace Talta {
 
   class CTranspiler {
     private:
-      std::shared_ptr<Ceetah::AST::Expression> transpile(AltaCore::AST::Node* node);
+      std::shared_ptr<Ceetah::AST::Expression> transpile(AltaCore::AST::Node* node, AltaCore::DH::Node* info);
       std::shared_ptr<Ceetah::AST::Type> transpileType(AltaCore::DET::Type* type);
       void headerPredeclaration(std::string def, std::string mangledModuleName);
       std::vector<uint8_t> convertTypeModifiers(std::vector<uint8_t> altaModifiers);
@@ -38,7 +38,6 @@ namespace Talta {
     protected:
       std::shared_ptr<Ceetah::AST::Type> size_tType = source.createType("size_t", { { Ceetah::AST::TypeModifierFlag::Constant } });
     public:
-      
       void transpile(std::shared_ptr<AltaCore::AST::RootNode> altaRoot);
   };
   std::map<std::string, std::tuple<std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<AltaCore::DET::Module>>> recursivelyTranspileToC(std::shared_ptr<AltaCore::AST::RootNode> altaRoot, CTranspiler* transpiler = nullptr);
