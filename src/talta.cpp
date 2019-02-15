@@ -762,6 +762,20 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
   } else if (nodeType == AAST::NodeType::CharacterLiteralNode) {
     auto lit = dynamic_cast<AAST::CharacterLiteralNode*>(node);
     return source.createCharacterLiteral(lit->value, lit->escaped);
+  } else if (nodeType == AAST::NodeType::SubscriptExpression) {
+    auto subs = dynamic_cast<AAST::SubscriptExpression*>(node);
+    auto info = dynamic_cast<DH::SubscriptExpression*>(_info);
+    auto cTarget = transpile(subs->target.get(), info->target.get());
+    auto cIndex = transpile(subs->index.get(), info->index.get());
+    /*
+     * now, why transpile to an add-and-dereference, you ask?
+     * i could tell you a bunch of crap about wanting to guarantee
+     * compiler behavior in case the C compiler decides that
+     * a subscript is not equal to an add-and-dereference, but the
+     * real reason is that i just didn't feel like adding subscript
+     * expression to Ceetah right now. so...
+     */
+    return source.createDereference(source.createBinaryOperation(CAST::OperatorType::Addition, cTarget, cIndex));
   }
   return nullptr;
 };
