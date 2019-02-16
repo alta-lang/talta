@@ -23,7 +23,7 @@ std::string Talta::cTypeNameify(AltaCore::DET::Type* type, bool mangled) {
       case NT::Byte:
         return "char";
       case NT::Bool:
-        return mangled ? "unsigned_int" : "unsigned int";
+        return "_Alta_bool";
       case NT::Void:
         return "void";
       default:
@@ -296,8 +296,14 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
       isMain = true;
     }
     if (isMain) {
-      source.insertExpressionStatement(source.createFunctionCall(source.createFetch("_Alta_init_global_runtime"), {}));
-      source.insertExpressionStatement(source.createFunctionCall(source.createFetch("_Alta_unwind_global_runtime"), {}));
+      source.insertExpressionStatement(
+        source.createFunctionCall(source.createFetch("_Alta_init_global_runtime"), {})
+      );
+      source.insertExpressionStatement(
+        source.createFunctionCall(source.createFetch("atexit"), {
+          source.createFetch("_Alta_unwind_global_runtime")
+        })
+      );
     }
     for (size_t i = 0; i < aFunc->body->statements.size(); i++) {
       auto& stmt = aFunc->body->statements[i];
@@ -458,9 +464,9 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
   } else if (nodeType == AltaNodeType::BooleanLiteralNode) {
     auto boolLit = dynamic_cast<AAST::BooleanLiteralNode*>(node);
     if (boolLit->value) {
-      return source.createIntegerLiteral(1);
+      return source.createFetch("_Alta_bool_true");
     } else {
-      return source.createIntegerLiteral(0);
+      return source.createFetch("_Alta_bool_false");
     }
   } else if (nodeType == AltaNodeType::BinaryOperation) {
     auto binOp = dynamic_cast<AAST::BinaryOperation*>(node);
