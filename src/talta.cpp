@@ -291,6 +291,14 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     auto returnType = transpileType(info->function->returnType.get());
 
     source.insertFunctionDefinition(mangledFuncName, cParams, returnType);
+    bool isMain = false;
+    if (info->function->isLiteral && info->function->name == "main") {
+      isMain = true;
+    }
+    if (isMain) {
+      source.insertExpressionStatement(source.createFunctionCall(source.createFetch("_Alta_init_global_runtime"), {}));
+      source.insertExpressionStatement(source.createFunctionCall(source.createFetch("_Alta_unwind_global_runtime"), {}));
+    }
     for (size_t i = 0; i < aFunc->body->statements.size(); i++) {
       auto& stmt = aFunc->body->statements[i];
       auto& stmtInfo = info->body->statements[i];
