@@ -395,6 +395,12 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
             tgt = source.createDereference(tgt);
           }
         }
+        if (info->parentClassAccessors.find(info->narrowedToIndex) != info->parentClassAccessors.end()) {
+          auto& parents = info->parentClassAccessors[info->narrowedToIndex];
+          for (auto& parent: parents) {
+            tgt = source.createAccessor(tgt, mangleName(parent.get()));
+          }
+        }
         result = source.createAccessor(tgt, mangleName(info->narrowedTo.get()));
       }
       auto ut = AltaCore::DET::Type::getUnderlyingType(info->narrowedTo);
@@ -407,6 +413,12 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
         auto selfAlta = acc->target.get();
         auto selfInfo = info->target.get();
         auto self = transpile(selfAlta, selfInfo);
+        if (info->parentClassAccessors.find(info->readAccessorIndex) != info->parentClassAccessors.end()) {
+          auto& parents = info->parentClassAccessors[info->readAccessorIndex];
+          for (auto& parent: parents) {
+            self = source.createAccessor(self, mangleName(parent.get()));
+          }
+        }
         /*
         auto selfType = AltaCore::DET::Type::getUnderlyingType(selfAlta);
         for (size_t i = 0; i < selfType->referenceLevel(); i++) {
@@ -602,10 +614,15 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     }
 
     std::vector<std::pair<std::string, std::shared_ptr<CAST::Type>>> members;
+    members.emplace_back("_Alta_class_info_struct", source.createType("_Alta_class_info"));
+    for (auto& parent: info->klass->parents) {
+      auto mangledParent = mangleName(parent.get());
+      members.emplace_back(mangledParent, source.createType(mangledParent));
+    }
     for (auto item: info->klass->scope->items) {
       if (item->nodeType() == AltaCore::DET::NodeType::Variable && item->name != "this") {
         auto var = std::dynamic_pointer_cast<AltaCore::DET::Variable>(item);
-        members.push_back(std::make_pair(mangleName(var.get()), transpileType(var->type.get())));
+        members.emplace_back(mangleName(var.get()), transpileType(var->type.get()));
       }
     }
     
@@ -620,6 +637,21 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     header.insertFunctionDeclaration("_init_" + mangledClassName, { std::make_tuple("_Alta_self", self) }, self);
 
     source.insertFunctionDefinition("_init_" + mangledClassName, { std::make_tuple("_Alta_self", self) }, self);
+
+    source.insertExpressionStatement(
+      source.createAssignment(
+        source.createAccessor(
+          source.createAccessor(
+            source.createDereference(
+              source.createFetch("_Alta_self")
+            ),
+            "_Alta_class_info_struct"
+          ),
+          "typeName"
+        ),
+        source.createStringLiteral(mangledClassName)
+      )
+    );
 
     enum class LoopKind {
       Members,
