@@ -30,6 +30,7 @@ namespace Talta {
       void headerPredeclaration(std::string def, std::string mangledModuleName);
       std::vector<uint8_t> convertTypeModifiers(std::vector<uint8_t> altaModifiers);
       void defineFunctionalType(std::shared_ptr<AltaCore::DET::Type> type, bool inHeader = false);
+      std::vector<std::shared_ptr<Ceetah::AST::Expression>> processArgs(std::vector<ALTACORE_VARIANT<std::pair<std::shared_ptr<AltaCore::AST::ExpressionNode>, std::shared_ptr<AltaCore::DH::ExpressionNode>>, std::vector<std::pair<std::shared_ptr<AltaCore::AST::ExpressionNode>, std::shared_ptr<AltaCore::DH::ExpressionNode>>>>> adjustedArguments, std::vector<std::tuple<std::string, std::shared_ptr<AltaCore::DET::Type>, bool, std::string>> func);
     public:
       std::shared_ptr<Ceetah::AST::RootNode> cRoot = nullptr;
       std::shared_ptr<Ceetah::AST::RootNode> hRoot = nullptr;
