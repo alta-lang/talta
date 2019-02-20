@@ -864,13 +864,15 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
   } else if (nodeType == AAST::NodeType::SuperClassFetch) {
     auto sc = dynamic_cast<AAST::SuperClassFetch*>(node);
     auto info = dynamic_cast<DH::SuperClassFetch*>(_info);
-    return source.createPointer(
-      source.createAccessor(
-        source.createDereference(
-          source.createFetch("_Alta_self")
-        ),
-        mangleName(info->superclass.get())
-      )
+    // since we return a reference,
+    // we would have to dereference a pointer if we were to insert
+    // one, so that's completely useless. just insert a regular
+    // accessor. later code can create a pointer to it if necessary
+    return source.createAccessor(
+      source.createDereference(
+        source.createFetch("_Alta_self")
+      ),
+      mangleName(info->superclass.get())
     );
   }
   return nullptr;
