@@ -282,6 +282,35 @@ void Talta::CTranspiler::defineFunctionalType(std::shared_ptr<AltaCore::DET::Typ
   target.exitInsertionPoint();
 };
 
+void Talta::CTranspiler::stackBookkeepingStart(std::shared_ptr<AltaCore::DET::Scope> scope) {
+  source.insertVariableDefinition(
+    source.createType("size_t"),
+    mangleName(scope.get()) + "_stack_index",
+    source.createAccessor(
+      source.createAccessor(
+        source.createFetch("_Alta_global_runtime"),
+        "local"
+      ),
+      "nodeCount"
+    )
+  );
+};
+
+void Talta::CTranspiler::stackBookkeepingStop(std::shared_ptr<AltaCore::DET::Scope> scope) {
+  source.insertExpressionStatement(
+    source.createFunctionCall(source.createFetch("_Alta_object_stack_unwind"), {
+      source.createPointer(
+        source.createAccessor(
+          source.createFetch("_Alta_global_runtime"),
+          "local"
+        )
+      ),
+      source.createFetch(mangleName(scope.get()) + "_stack_index"),
+      source.createFetch("_Alta_bool_true"),
+    })
+  );
+};
+
 std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore::AST::Node* node, AltaCore::DH::Node* _info) {
   using AltaNodeType = AltaCore::AST::NodeType;
   namespace AAST = AltaCore::AST;
@@ -336,11 +365,16 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
         })
       );
     }
+
+    stackBookkeepingStart(info->function->scope);
+
     for (size_t i = 0; i < aFunc->body->statements.size(); i++) {
       auto& stmt = aFunc->body->statements[i];
       auto& stmtInfo = info->body->statements[i];
       transpile(stmt.get(), stmtInfo.get());
     }
+
+    stackBookkeepingStop(info->function->scope);
     source.exitInsertionPoint();
 
     if (info->function->isExport || info->function->isMethod) {
@@ -363,6 +397,14 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
   } else if (nodeType == AltaNodeType::ReturnDirectiveNode) {
     auto retDir = dynamic_cast<AAST::ReturnDirectiveNode*>(node);
     auto info = dynamic_cast<DH::ReturnDirectiveNode*>(_info);
+    std::shared_ptr<AltaCore::DET::Scope> target = info->inputScope;
+    while (target) {
+      stackBookkeepingStop(target);
+      if (target->parentFunction.lock()) {
+        break;
+      }
+      target = target->parent.lock();
+    }
     std::shared_ptr<Ceetah::AST::Expression> expr = nullptr;
     if (retDir->expression != nullptr) {
       expr = transpile(retDir->expression.get(), info->expression.get());
@@ -409,6 +451,19 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
       header.exitInsertionPoint();
     } else if (AltaCore::Util::isInFunction(info->variable.get())) {
       // if it is contained in a function, we can return a reference to the newly defined variable
+      // and add it to the stack (if it's not native)
+      if (!info->variable->type->isNative && info->variable->type->indirectionLevel() == 0) {
+        source.insertExpressionStatement(source.createFunctionCall(
+          source.createFetch("_Alta_object_stack_push"),
+          {
+            source.createPointer(source.createFetch("_Alta_global_runtime.local")),
+            source.createCast(
+              source.createPointer(source.createFetch(mangledVarName)),
+              source.createType("_Alta_basic_class", { { Ceetah::AST::TypeModifierFlag::Pointer } })
+            ),
+          }
+        ));
+      }
       return source.createPointer(source.createFetch(mangledVarName));
     }
   } else if (nodeType == AltaNodeType::Accessor) {
@@ -609,11 +664,13 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     auto block = dynamic_cast<AAST::BlockNode*>(node);
     auto info = dynamic_cast<DH::BlockNode*>(_info);
     source.insertBlock();
+    stackBookkeepingStart(info->inputScope);
     for (size_t i = 0; i < block->statements.size(); i++) {
       auto& stmt = block->statements[i];
       auto& stmtInfo = info->statements[i];
       transpile(stmt.get(), stmtInfo.get());
     }
+    stackBookkeepingStop(info->inputScope);
     source.exitInsertionPoint();
   } else if (nodeType == AltaNodeType::ConditionalStatement) {
     auto cond = dynamic_cast<AAST::ConditionalStatement*>(node);
@@ -673,18 +730,58 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
 
     source.insertFunctionDefinition("_init_" + mangledClassName, { std::make_tuple("_Alta_self", self) }, self);
 
+    auto infoStruct = source.createAccessor(source.createDereference(source.createFetch("_Alta_self")), "_Alta_class_info_struct");
+
     source.insertExpressionStatement(
       source.createAssignment(
         source.createAccessor(
-          source.createAccessor(
-            source.createDereference(
-              source.createFetch("_Alta_self")
-            ),
-            "_Alta_class_info_struct"
-          ),
+          infoStruct,
           "typeName"
         ),
         source.createStringLiteral(mangledClassName)
+      )
+    );
+
+    source.insertExpressionStatement(
+      source.createAssignment(
+        source.createAccessor(
+          infoStruct,
+          "destroyed"
+        ),
+        source.createFetch("_Alta_bool_false")
+      )
+    );
+
+    source.insertExpressionStatement(
+      source.createAssignment(
+        source.createAccessor(
+          infoStruct,
+          "persistent"
+        ),
+        source.createFetch("_Alta_bool_false")
+      )
+    );
+
+    // uncomment this and remove the next statement
+    // when destructors are added
+    /*
+    source.insertExpressionStatement(
+      source.createAssignment(
+        source.createAccessor(
+          infoStruct,
+          "destructor"
+        ),
+        source.createFetch(mangleName(info->klass->destructor.get()))
+      )
+    );
+    */
+    source.insertExpressionStatement(
+      source.createAssignment(
+        source.createAccessor(
+          infoStruct,
+          "destructor"
+        ),
+        source.createFetch("NULL")
       )
     );
 
@@ -755,11 +852,13 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     fullParams.insert(fullParams.end(), params.begin(), params.end());
     header.insertFunctionDeclaration("_c_" + mangledName, fullParams, retPtr);
     source.insertFunctionDefinition("_c_" + mangledName, fullParams, retPtr);
+    stackBookkeepingStart(constr->scope);
     for (size_t i = 0; i < special->body->statements.size(); i++) {
       auto& stmt = special->body->statements[i];
       auto& stmtInfo = info->body->statements[i];
       transpile(stmt.get(), stmtInfo.get());
     }
+    stackBookkeepingStop(constr->scope);
     source.insertReturnDirective(source.createFetch("_Alta_self"));
     source.exitInsertionPoint();
 
@@ -773,6 +872,20 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     source.insertVariableDefinition(retPtr, "_Alta_self", source.createFunctionCall(source.createFetch("malloc"), {
       source.createSizeof(ret)
     }));
+    source.insertExpressionStatement(
+      source.createAssignment(
+        source.createAccessor(
+          source.createAccessor(
+            source.createDereference(
+              source.createFetch("_Alta_self")
+            ),
+            "_Alta_class_info_struct"
+          ),
+          "persistent"
+        ),
+        source.createFetch("_Alta_bool_true")
+      )
+    );
     source.insertExpressionStatement(source.createFunctionCall(source.createFetch("_init_" + mangledClassName), { source.createFetch("_Alta_self") }));
     std::vector<std::shared_ptr<CAST::Expression>> pArgs = { source.createFetch("_Alta_self") };
     pArgs.insert(pArgs.end(), args.begin(), args.end());
