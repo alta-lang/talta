@@ -361,7 +361,13 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
       );
       source.insertExpressionStatement(
         source.createFunctionCall(source.createFetch("atexit"), {
-          source.createFetch("_Alta_unwind_global_runtime")
+          // the cast is necessary to shut up a useless compiler warning
+          //
+          // ... because apparently C compilers think that void() != void(void)
+          source.createCast(
+            source.createFetch("_Alta_unwind_global_runtime"),
+            source.createType(source.createType("void"), { source.createType("void") }, std::vector<uint8_t> {})
+          )
         })
       );
     }
@@ -762,26 +768,20 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
       )
     );
 
-    // uncomment this and remove the next statement
-    // when destructors are added
-    /*
+    std::shared_ptr<CAST::Expression> dtor = nullptr;
+    if (info->klass->destructor) {
+      dtor = source.createFetch("_d_" + mangleName(info->klass->destructor.get()));
+    } else {
+      dtor = source.createFetch("NULL");
+    }
+
     source.insertExpressionStatement(
       source.createAssignment(
         source.createAccessor(
           infoStruct,
           "destructor"
         ),
-        source.createFetch(mangleName(info->klass->destructor.get()))
-      )
-    );
-    */
-    source.insertExpressionStatement(
-      source.createAssignment(
-        source.createAccessor(
-          infoStruct,
-          "destructor"
-        ),
-        source.createFetch("NULL")
+        dtor
       )
     );
 
@@ -802,15 +802,7 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
             source.insertExpressionStatement(source.createAssignment(source.createAccessor(source.createDereference(source.createFetch("_Alta_self")), mangledMemberName), transpile(member->varDef->initializationExpression.get(), memberInfo->varDef->initializationExpression.get())));
           }
         }
-        if (kind == LoopKind::All && stmt->nodeType() == AAST::NodeType::ClassSpecialMethodDefinitionStatement) {
-          auto special = std::dynamic_pointer_cast<AAST::ClassSpecialMethodDefinitionStatement>(stmt);
-          auto specialInfo = std::dynamic_pointer_cast<DH::ClassSpecialMethodDefinitionStatement>(stmtInfo);
-          if (special->type == AAST::SpecialClassMethod::Constructor) {
-            transpile(special.get(), specialInfo.get());
-          } else {
-            throw std::runtime_error("destructors aren't supported yet");
-          }
-        } else if (kind == LoopKind::All) {
+        if (kind == LoopKind::All) {
           transpile(stmt.get(), stmtInfo.get());
         }
       }
@@ -834,24 +826,51 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     auto mangledClassName = mangleName(info->klass.get());
     auto constr = info->method;
     auto mangledName = mangleName(constr.get());
-    std::vector<std::tuple<std::string, std::shared_ptr<CAST::Type>>> params;
-    for (size_t i = 0; i < constr->parameterVariables.size(); i++) {
-      auto& var = constr->parameterVariables[i];
-      auto& [name, ptype, isVariable, alias] = constr->parameters[i];
-      auto type = (isVariable) ? ptype->point() : ptype;
-      auto mangled = mangleName(var.get());
-      params.push_back({ (isVariable ? "_Alta_array_" : "") + mangled, transpileType(type.get()) });
-      if (isVariable) {
-        params.push_back({ "_Alta_array_length_" + mangled, size_tType });
-      }
-    }
+
     auto ret = header.createType(mangledClassName);
     auto retPtr = header.createType(mangledClassName, { { CAST::TypeModifierFlag::Pointer } });
+    auto voidType = header.createType("void");
+
+    bool isCtor = special->type == AltaCore::AST::SpecialClassMethod::Constructor;
+    
+    std::vector<std::tuple<std::string, std::shared_ptr<CAST::Type>>> params;
     decltype(params) fullParams;
-    fullParams.push_back({ "_Alta_self", retPtr });
-    fullParams.insert(fullParams.end(), params.begin(), params.end());
-    header.insertFunctionDeclaration("_c_" + mangledName, fullParams, retPtr);
-    source.insertFunctionDefinition("_c_" + mangledName, fullParams, retPtr);
+
+    std::string prefix;
+    decltype(ret) retType = nullptr;
+
+    if (isCtor) {
+      prefix = "_c_";
+      retType = retPtr;
+
+      fullParams.push_back({ "_Alta_self", retPtr });
+
+      for (size_t i = 0; i < constr->parameterVariables.size(); i++) {
+        auto& var = constr->parameterVariables[i];
+        auto& [name, ptype, isVariable, alias] = constr->parameters[i];
+        auto type = (isVariable) ? ptype->point() : ptype;
+        auto mangled = mangleName(var.get());
+        params.push_back({ (isVariable ? "_Alta_array_" : "") + mangled, transpileType(type.get()) });
+        if (isVariable) {
+          params.push_back({ "_Alta_array_length_" + mangled, size_tType });
+        }
+      }
+
+      fullParams.insert(fullParams.end(), params.begin(), params.end());
+    } else {
+      prefix = "_d_";
+      retType = voidType;
+
+      fullParams.push_back({ "__Alta_self", header.createType("_Alta_basic_class", { { CAST::TypeModifierFlag::Pointer } }) });
+    }
+
+    header.insertFunctionDeclaration(prefix + mangledName, fullParams, retType);
+    source.insertFunctionDefinition(prefix + mangledName, fullParams, retType);
+
+    if (!isCtor) {
+      source.insertVariableDefinition(retPtr, "_Alta_self", source.createCast(source.createFetch("__Alta_self"), retPtr));
+    }
+
     stackBookkeepingStart(constr->scope);
     for (size_t i = 0; i < special->body->statements.size(); i++) {
       auto& stmt = special->body->statements[i];
@@ -859,49 +878,70 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
       transpile(stmt.get(), stmtInfo.get());
     }
     stackBookkeepingStop(constr->scope);
-    source.insertReturnDirective(source.createFetch("_Alta_self"));
-    source.exitInsertionPoint();
 
-    std::vector<std::shared_ptr<CAST::Expression>> args;
-    for (auto param: constr->parameterVariables) {
-      args.push_back(source.createFetch(mangleName(param.get())));
-    }
-    
-    header.insertFunctionDeclaration("_cp_" + mangledName, params, retPtr);
-    source.insertFunctionDefinition("_cp_" + mangledName, params, retPtr);
-    source.insertVariableDefinition(retPtr, "_Alta_self", source.createFunctionCall(source.createFetch("malloc"), {
-      source.createSizeof(ret)
-    }));
-    source.insertExpressionStatement(
-      source.createAssignment(
-        source.createAccessor(
+    if (isCtor) {
+      source.insertReturnDirective(source.createFetch("_Alta_self"));
+    } else {
+      source.insertExpressionStatement(
+        source.createAssignment(
           source.createAccessor(
-            source.createDereference(
-              source.createFetch("_Alta_self")
+            source.createAccessor(
+              source.createDereference(
+                source.createFetch("_Alta_self")
+              ),
+              "_Alta_class_info_struct"
             ),
-            "_Alta_class_info_struct"
+            "destroyed"
           ),
-          "persistent"
-        ),
-        source.createFetch("_Alta_bool_true")
-      )
-    );
-    source.insertExpressionStatement(source.createFunctionCall(source.createFetch("_init_" + mangledClassName), { source.createFetch("_Alta_self") }));
-    std::vector<std::shared_ptr<CAST::Expression>> pArgs = { source.createFetch("_Alta_self") };
-    pArgs.insert(pArgs.end(), args.begin(), args.end());
-    source.insertExpressionStatement(source.createFunctionCall(source.createFetch("_c_" + mangledName), pArgs));
-    source.insertReturnDirective(source.createFetch("_Alta_self"));
+          source.createFetch("_Alta_bool_true")
+        )
+      );
+    }
+
     source.exitInsertionPoint();
 
-    header.insertFunctionDeclaration("_cn_" + mangledName, params, ret);
-    source.insertFunctionDefinition("_cn_" + mangledName, params, ret);
-    source.insertVariableDefinition(ret, "_Alta_self", source.createArrayLiteral({ source.createIntegerLiteral(0) }));
-    source.insertExpressionStatement(source.createFunctionCall(source.createFetch("_init_" + mangledClassName), { source.createPointer(source.createFetch("_Alta_self")) }));
-    std::vector<std::shared_ptr<CAST::Expression>> nArgs = { source.createPointer(source.createFetch("_Alta_self")) };
-    nArgs.insert(nArgs.end(), args.begin(), args.end());
-    source.insertExpressionStatement(source.createFunctionCall(source.createFetch("_c_" + mangledName), nArgs));
-    source.insertReturnDirective(source.createFetch("_Alta_self"));
-    source.exitInsertionPoint();
+    if (isCtor) {
+      std::vector<std::shared_ptr<CAST::Expression>> args;
+      for (auto param: constr->parameterVariables) {
+        args.push_back(source.createFetch(mangleName(param.get())));
+      }
+      
+      header.insertFunctionDeclaration("_cp_" + mangledName, params, retPtr);
+      source.insertFunctionDefinition("_cp_" + mangledName, params, retPtr);
+      source.insertVariableDefinition(retPtr, "_Alta_self", source.createFunctionCall(source.createFetch("malloc"), {
+        source.createSizeof(ret)
+      }));
+      source.insertExpressionStatement(
+        source.createAssignment(
+          source.createAccessor(
+            source.createAccessor(
+              source.createDereference(
+                source.createFetch("_Alta_self")
+              ),
+              "_Alta_class_info_struct"
+            ),
+            "persistent"
+          ),
+          source.createFetch("_Alta_bool_true")
+        )
+      );
+      source.insertExpressionStatement(source.createFunctionCall(source.createFetch("_init_" + mangledClassName), { source.createFetch("_Alta_self") }));
+      std::vector<std::shared_ptr<CAST::Expression>> pArgs = { source.createFetch("_Alta_self") };
+      pArgs.insert(pArgs.end(), args.begin(), args.end());
+      source.insertExpressionStatement(source.createFunctionCall(source.createFetch("_c_" + mangledName), pArgs));
+      source.insertReturnDirective(source.createFetch("_Alta_self"));
+      source.exitInsertionPoint();
+
+      header.insertFunctionDeclaration("_cn_" + mangledName, params, ret);
+      source.insertFunctionDefinition("_cn_" + mangledName, params, ret);
+      source.insertVariableDefinition(ret, "_Alta_self", source.createArrayLiteral({ source.createIntegerLiteral(0) }));
+      source.insertExpressionStatement(source.createFunctionCall(source.createFetch("_init_" + mangledClassName), { source.createPointer(source.createFetch("_Alta_self")) }));
+      std::vector<std::shared_ptr<CAST::Expression>> nArgs = { source.createPointer(source.createFetch("_Alta_self")) };
+      nArgs.insert(nArgs.end(), args.begin(), args.end());
+      source.insertExpressionStatement(source.createFunctionCall(source.createFetch("_c_" + mangledName), nArgs));
+      source.insertReturnDirective(source.createFetch("_Alta_self"));
+      source.exitInsertionPoint();
+    }
   } else if (nodeType == AAST::NodeType::ClassInstantiationExpression) {
     auto call = dynamic_cast<AAST::ClassInstantiationExpression*>(node);
     auto info = dynamic_cast<DH::ClassInstantiationExpression*>(_info);
