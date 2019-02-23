@@ -918,6 +918,14 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
       transpile(info->defaultConstructor.get(), info->defaultConstructorDetail.get());
     }
 
+    if (info->createDefaultDestructor) {
+      transpile(info->defaultDestructor.get(), info->defaultDestructorDetail.get());
+    }
+
+    if (info->createDefaultCopyConstructor) {
+      transpile(info->defaultCopyConstructor.get(), info->defaultCopyConstructorDetail.get());
+    }
+
     header.exitInsertionPoint();
   } else if (nodeType == AAST::NodeType::ClassSpecialMethodDefinitionStatement) {
     auto special = dynamic_cast<AAST::ClassSpecialMethodDefinitionStatement*>(node);
@@ -1005,16 +1013,7 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     if (isCtor) {
       source.insertReturnDirective(source.createFetch("_Alta_self"));
     } else {
-      for (auto& item: info->klass->scope->items) {
-        if (item->nodeType() != AltaCore::DET::NodeType::Variable) continue;
-        if (item->name == "this") continue;
-
-        auto& var = std::dynamic_pointer_cast<AltaCore::DET::Variable>(item);
-
-        if (var->type->isNative) continue;
-        if (var->type->indirectionLevel() > 0) continue;
-        if (!var->type->klass->destructor) continue;
-
+      for (auto& var: info->klass->itemsToDestroy) {
         source.insertExpressionStatement(source.createFunctionCall(source.createFetch("_d_" + mangleName(var->type->klass->destructor.get())), {
           source.createCast(
             source.createPointer(
