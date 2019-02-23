@@ -1006,6 +1006,27 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     if (info->isDefaultCopyConstructor) {
       auto self = source.createDereference(source.createFetch("_Alta_self"));
       auto other = source.createDereference(source.createFetch(mangleName(constr->parameterVariables[0].get())));
+      source.insertExpressionStatement(source.createAssignment(
+        self,
+        other
+      ));
+      for (auto& parent: info->klass->parents) {
+        if (parent->copyConstructor) {
+          auto name = mangleName(parent.get());
+          source.insertExpressionStatement(source.createAssignment(
+            source.createAccessor(
+              self,
+              name
+            ),
+            source.createFunctionCall(
+              source.createFetch("_cn_" + mangleName(parent->copyConstructor.get())),
+              {
+                source.createPointer(source.createAccessor(other, name))
+              }
+            )
+          ));
+        }
+      }
       for (auto& var: info->klass->itemsToCopy) {
         auto name = mangleName(var.get());
         source.insertExpressionStatement(source.createAssignment(
