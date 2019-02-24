@@ -646,6 +646,12 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
       for (size_t i = 0; i < info->variable->type->referenceLevel(); i++) {
         init = source.createPointer(init);
       }
+    } else if (info->type->type->pointerLevel() > 0) {
+      init = source.createFetch("NULL");
+    } else if (info->type->type->isNative) {
+      init = source.createArrayLiteral({ source.createIntegerLiteral(0) });
+    } else {
+      init = source.createFunctionCall(source.createFetch("_cn_" + mangleName(info->type->type->klass->defaultConstructor.get())), {});
     }
 
     source.insertVariableDefinition(type, mangledVarName, init);
