@@ -17,27 +17,54 @@ std::vector<std::shared_ptr<Ceetah::AST::Expression>> Talta::CTranspiler::proces
       auto [name, targetType, isVariable, id] = parameters[i];
       if (auto solo = ALTACORE_VARIANT_GET_IF<std::pair<std::shared_ptr<AAST::ExpressionNode>, std::shared_ptr<DH::ExpressionNode>>>(&arg)) {
         auto& [arg, info] = *solo;
+        auto transpiled = transpile(arg.get(), info.get());
         if (targetType->referenceLevel() > 0) {
-          args.push_back(transpile(arg.get(), info.get()));
+          args.push_back(transpiled);
         } else {
-          args.push_back(doCopyCtor(arg, info));
+          bool didRetrieval = false;
+          auto exprType = AltaCore::DET::Type::getUnderlyingType(info.get());
+          auto val = doParentRetrieval(transpiled, exprType, targetType, &didRetrieval);
+          if (didRetrieval) {
+            val = doCopyCtor(val, targetType);
+          } else {
+            val = doCopyCtor(val, arg, info);
+          }
+          args.push_back(val);
         }
       } else if (auto multi = ALTACORE_VARIANT_GET_IF<std::vector<std::pair<std::shared_ptr<AAST::ExpressionNode>, std::shared_ptr<DH::ExpressionNode>>>>(&arg)) {
         if (varargTable[id]) {
           for (auto& [arg, info]: *multi) {
+            auto transpiled = transpile(arg.get(), info.get());
             if (targetType->referenceLevel() > 0) {
-              args.push_back(transpile(arg.get(), info.get()));
+              args.push_back(transpiled);
             } else {
-              args.push_back(doCopyCtor(arg, info));
+              bool didRetrieval = false;
+              auto exprType = AltaCore::DET::Type::getUnderlyingType(info.get());
+              auto val = doParentRetrieval(transpiled, exprType, targetType, &didRetrieval);
+              if (didRetrieval) {
+                val = doCopyCtor(val, targetType);
+              } else {
+                val = doCopyCtor(val, arg, info);
+              }
+              args.push_back(val);
             }
           }
         } else {
           std::vector<std::shared_ptr<CAST::Expression>> arrItems;
           for (auto& [arg, info]: *multi) {
+            auto transpiled = transpile(arg.get(), info.get());
             if (targetType->referenceLevel() > 0) {
-              arrItems.push_back(transpile(arg.get(), info.get()));
+              arrItems.push_back(transpiled);
             } else {
-              arrItems.push_back(doCopyCtor(arg, info));
+              bool didRetrieval = false;
+              auto exprType = AltaCore::DET::Type::getUnderlyingType(info.get());
+              auto val = doParentRetrieval(transpiled, exprType, targetType, &didRetrieval);
+              if (didRetrieval) {
+                val = doCopyCtor(val, targetType);
+              } else {
+                val = doCopyCtor(val, arg, info);
+              }
+              arrItems.push_back(val);
             }
           }
           auto cType = transpileType(targetType.get());
@@ -324,9 +351,9 @@ void Talta::CTranspiler::stackBookkeepingStop(std::shared_ptr<AltaCore::DET::Sco
   );
 };
 
-std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::doCopyCtor(std::shared_ptr<AltaCore::AST::ExpressionNode> expr, std::shared_ptr<AltaCore::DH::ExpressionNode> info) {
+std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::doCopyCtor(std::shared_ptr<Ceetah::AST::Expression> transpiled, std::shared_ptr<AltaCore::AST::ExpressionNode> expr, std::shared_ptr<AltaCore::DH::ExpressionNode> info) {
   using NT = AltaCore::AST::NodeType;
-  auto retExpr = transpile(expr.get(), info.get());
+  auto retExpr = transpiled;
   auto exprType = AltaCore::DET::Type::getUnderlyingType(info.get());
   auto nodeType = expr->nodeType();
   if (
@@ -357,6 +384,87 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::doCopyCtor(std::sha
     );
   }
   return retExpr;
+};
+
+std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::doCopyCtor(std::shared_ptr<Ceetah::AST::Expression> expr, std::shared_ptr<AltaCore::DET::Type> exprType) {
+  using NT = AltaCore::AST::NodeType;
+  auto retExpr = expr;
+  auto nodeType = expr->nodeType();
+  if (
+    // native types are copied by value
+    !exprType->isNative &&
+    // make sure we have a copy constructor,
+    // otherwise, there's no point in continuing
+    exprType->klass->copyConstructor &&
+    // pointers are copied by value
+    //
+    // note that this does not include references,
+    // those do need to be copied
+    exprType->pointerLevel() < 1
+  ) {
+    retExpr = source.createFunctionCall(
+      source.createFetch("_cn_" + mangleName(exprType->klass->copyConstructor.get())),
+      {
+        source.createPointer(retExpr),
+      }
+    );
+  }
+  return retExpr;
+};
+
+std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::doParentRetrieval(std::shared_ptr<Ceetah::AST::Expression> expr, std::shared_ptr<AltaCore::DET::Type> exprType, std::shared_ptr<AltaCore::DET::Type> targetType, bool* didRetrieval) {
+  auto result = expr;
+  if (didRetrieval != nullptr) {
+    *didRetrieval = false;
+  }
+  if (
+    !exprType->isNative &&
+    exprType->klass->id != targetType->klass->id &&
+    exprType->klass->hasParent(targetType->klass)
+  ) {
+    if (exprType->pointerLevel() > 0) {
+      result = source.createDereference(result);
+    }
+    std::deque<std::shared_ptr<AltaCore::DET::Class>> parentAccessors;
+    std::stack<size_t> idxs;
+    parentAccessors.push_back(exprType->klass);
+    idxs.push(0);
+    while (parentAccessors.size() > 0) {
+      auto& parents = parentAccessors.back()->parents;
+      bool cont = false;
+      bool done = false;
+      for (size_t i = idxs.top(); i < parents.size(); i++) {
+        auto& parent = parents[i];
+        parentAccessors.push_back(parent);
+        if (parent->id == targetType->klass->id) {
+          done = true;
+          break;
+        } else if (parent->parents.size() > 0) {
+          cont = true;
+          break;
+        } else {
+          parentAccessors.pop_back();
+        }
+      }
+      if (done) break;
+      if (cont) continue;
+      parentAccessors.pop_back();
+      idxs.pop();
+    }
+    parentAccessors.pop_front();
+    for (auto& parent: parentAccessors) {
+      result = source.createAccessor(result, mangleName(parent.get()));
+    }
+    if (targetType->pointerLevel() > 0 && targetType->pointerLevel() < 2) {
+      result = source.createPointer(result);
+    } else if (targetType->pointerLevel() > 0) {
+      throw std::runtime_error("can't do that");
+    }
+    if (didRetrieval != nullptr) {
+      *didRetrieval = true;
+    }
+  }
+  return result;
 };
 
 std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore::AST::Node* node, AltaCore::DH::Node* _info) {
@@ -477,11 +585,20 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
 
     std::shared_ptr<Ceetah::AST::Expression> expr = nullptr;
     if (retDir->expression != nullptr) {
+      auto transpiled = transpile(retDir->expression.get(), info->expression.get());
       // if we're returing a reference, there's no need to copy anything
       if (info->functionReturnType && info->functionReturnType->referenceLevel() > 0) {
-        expr = transpile(retDir->expression.get(), info->expression.get());
+        expr = transpiled;
       } else {
-        expr = doCopyCtor(retDir->expression, info->expression);
+        bool didRetrieval = false;
+        auto exprType = AltaCore::DET::Type::getUnderlyingType(info->expression.get());
+        auto val = doParentRetrieval(transpiled, exprType, info->functionReturnType, &didRetrieval);
+        if (didRetrieval) {
+          val = doCopyCtor(val, info->functionReturnType);
+        } else {
+          val = doCopyCtor(val, retDir->expression, info->expression);
+        }
+        expr = val;
       }
       if (info->functionReturnType) {
         for (size_t i = 0; i < info->functionReturnType->referenceLevel(); i++) {
@@ -512,10 +629,19 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
 
     std::shared_ptr<CAST::Expression> init = nullptr;
     if (varDef->initializationExpression != nullptr) {
+      auto transpiled = transpile(varDef->initializationExpression.get(), info->initializationExpression.get());
       if (info->variable->type->referenceLevel() > 0) {
-        init = transpile(varDef->initializationExpression.get(), info->initializationExpression.get());
+        init = transpiled;
       } else {
-        init = doCopyCtor(varDef->initializationExpression, info->initializationExpression);
+        bool didRetrieval = false;
+        auto exprType = AltaCore::DET::Type::getUnderlyingType(info->initializationExpression.get());
+        auto val = doParentRetrieval(transpiled, exprType, info->variable->type, &didRetrieval);
+        if (didRetrieval) {
+          val = doCopyCtor(val, info->variable->type);
+        } else {
+          val = doCopyCtor(val, varDef->initializationExpression, info->initializationExpression);
+        }
+        init = val;
       }
       for (size_t i = 0; i < info->variable->type->referenceLevel(); i++) {
         init = source.createPointer(init);
@@ -663,7 +789,17 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
       }));
       tgt = source.createDereference(source.createFetch(tmpName));
     }
-    return source.createAssignment(tgt, doCopyCtor(assign->value, info->value));
+    bool didRetrieval = false;
+    auto expr = transpile(assign->value.get(), info->value.get());
+    auto exprType = AltaCore::DET::Type::getUnderlyingType(info->value.get());
+    auto val = doParentRetrieval(expr, exprType, tgtType, &didRetrieval);
+    if (didRetrieval) {
+      val = doCopyCtor(val, tgtType);
+    } else {
+      val = doCopyCtor(expr, assign->value, info->value);
+    }
+
+    return source.createAssignment(tgt, val);
   } else if (nodeType == AltaNodeType::BooleanLiteralNode) {
     auto boolLit = dynamic_cast<AAST::BooleanLiteralNode*>(node);
     if (boolLit->value) {
@@ -1124,7 +1260,9 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
           source.createFetch("_Alta_bool_true")
         )
       );
-      source.insertExpressionStatement(source.createFunctionCall(source.createFetch("_init_" + mangledClassName), { source.createFetch("_Alta_self") }));
+      if (!info->isDefaultCopyConstructor) {
+        source.insertExpressionStatement(source.createFunctionCall(source.createFetch("_init_" + mangledClassName), { source.createFetch("_Alta_self") }));
+      }
       std::vector<std::shared_ptr<CAST::Expression>> pArgs = { source.createFetch("_Alta_self") };
       pArgs.insert(pArgs.end(), args.begin(), args.end());
       source.insertExpressionStatement(source.createFunctionCall(source.createFetch("_c_" + mangledName), pArgs));
@@ -1134,7 +1272,9 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
       header.insertFunctionDeclaration("_cn_" + mangledName, params, ret);
       source.insertFunctionDefinition("_cn_" + mangledName, params, ret);
       source.insertVariableDefinition(ret, "_Alta_self", source.createArrayLiteral({ source.createIntegerLiteral(0) }));
-      source.insertExpressionStatement(source.createFunctionCall(source.createFetch("_init_" + mangledClassName), { source.createPointer(source.createFetch("_Alta_self")) }));
+      if (!info->isDefaultCopyConstructor) {
+        source.insertExpressionStatement(source.createFunctionCall(source.createFetch("_init_" + mangledClassName), { source.createPointer(source.createFetch("_Alta_self")) }));
+      }
       std::vector<std::shared_ptr<CAST::Expression>> nArgs = { source.createPointer(source.createFetch("_Alta_self")) };
       nArgs.insert(nArgs.end(), args.begin(), args.end());
       source.insertExpressionStatement(source.createFunctionCall(source.createFetch("_c_" + mangledName), nArgs));
@@ -1195,7 +1335,29 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
   } else if (nodeType == AAST::NodeType::CastExpression) {
     auto cast = dynamic_cast<AAST::CastExpression*>(node);
     auto info = dynamic_cast<DH::CastExpression*>(_info);
-    return source.createCast(transpile(cast->target.get(), info->target.get()), transpileType(info->type->type.get()));
+    auto tgt = transpile(cast->target.get(), info->target.get());
+    bool didRetrieval = false;
+    auto exprType = AltaCore::DET::Type::getUnderlyingType(info->target.get());
+    tgt = doParentRetrieval(tgt, exprType, info->type->type, &didRetrieval);
+    if (exprType->referenceLevel() < info->type->type->referenceLevel()) {
+      tgt = source.createPointer(tgt); // we can't get the address of an address, we can only get a pointer to the value once, not recursively
+      // TODO: when warnings are added, warn if the target reference level
+      //       is greater than one level above the source reference level
+    }
+    if (info->type->type->isExactlyCompatibleWith(*exprType)) {
+      // both types are exactly the same, just do nothing
+      return tgt;
+    } else if (!didRetrieval && info->type->type->indirectionLevel() < 1 && !info->type->type->isNative) {
+      throw std::runtime_error("can't cast a plain class to another class");
+    } else if (didRetrieval && info->type->type->indirectionLevel() < 1) {
+      return tgt;
+    } else {
+      tgt = source.createCast(tgt, transpileType(info->type->type.get()));
+    }
+    for (size_t i = 0; i < info->type->type->referenceLevel(); i++) {
+      tgt = source.createDereference(tgt);
+    }
+    return tgt;
   } else if (nodeType == AAST::NodeType::CharacterLiteralNode) {
     auto lit = dynamic_cast<AAST::CharacterLiteralNode*>(node);
     return source.createCharacterLiteral(lit->value, lit->escaped);
