@@ -36,6 +36,7 @@ namespace Talta {
       std::shared_ptr<Ceetah::AST::Expression> doCopyCtor(std::shared_ptr<Ceetah::AST::Expression> transpiled, std::shared_ptr<AltaCore::AST::ExpressionNode> expr, std::shared_ptr<AltaCore::DH::ExpressionNode> info);
       std::shared_ptr<Ceetah::AST::Expression> doCopyCtor(std::shared_ptr<Ceetah::AST::Expression> expr, std::shared_ptr<AltaCore::DET::Type> exprType);
       std::shared_ptr<Ceetah::AST::Expression> doParentRetrieval(std::shared_ptr<Ceetah::AST::Expression> expr, std::shared_ptr<AltaCore::DET::Type> exprType, std::shared_ptr<AltaCore::DET::Type> targetType, bool* didRetrieval = nullptr);
+      std::shared_ptr<Ceetah::AST::Expression> doChildRetrieval(std::shared_ptr<Ceetah::AST::Expression> expr, std::shared_ptr<AltaCore::DET::Type> exprType, std::shared_ptr<AltaCore::DET::Type> targetType, bool* didRetrieval = nullptr);
     public:
       std::shared_ptr<Ceetah::AST::RootNode> cRoot = nullptr;
       std::shared_ptr<Ceetah::AST::RootNode> hRoot = nullptr;
