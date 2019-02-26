@@ -846,7 +846,7 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     auto tgt = transpile(assign->target.get(), info->target.get());
     auto tgtType = AltaCore::DET::Type::getUnderlyingType(info->target.get());
     if (!tgtType->isNative && tgtType->pointerLevel() < 1 && tgtType->klass->destructor) {
-      auto& id = tempVarIDs[info->inputScope->id];
+      auto id = tempVarIDs[info->inputScope->id]++;
       auto tmpName = mangleName(info->inputScope.get()) + "_temp_var_" + std::to_string(id);
       source.insertVariableDefinition(
         transpileType(tgtType->point().get()),
@@ -1524,6 +1524,157 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
       ),
       mangleName(info->superclass.get())
     );
+  } else if (nodeType == AAST::NodeType::InstanceofExpression) {
+    auto instOf = dynamic_cast<AAST::InstanceofExpression*>(node);
+    auto info = dynamic_cast<DH::InstanceofExpression*>(_info);
+    auto targetType = AltaCore::DET::Type::getUnderlyingType(info->target.get());
+    auto& testType = info->type->type;
+
+    if (targetType->isNative != testType->isNative) {
+      return source.createFetch("_Alta_bool_false");
+    } else if (targetType->isNative) {
+      if (testType->isExactlyCompatibleWith(*targetType)) {
+        return source.createFetch("_Alta_bool_false");
+      } else {
+        return source.createFetch("_Alta_bool_true");
+      }
+    } else if (targetType->klass->id == testType->klass->id) {
+      return source.createFetch("_Alta_bool_true");
+    } else if (targetType->klass->hasParent(testType->klass)) {
+      return source.createFetch("_Alta_bool_true");
+    } else if (testType->klass->hasParent(targetType->klass)) {
+      auto tgt = transpile(instOf->target.get(), info->target.get());
+      std::deque<std::shared_ptr<AltaCore::DET::Class>> parentAccessors;
+      std::stack<size_t> idxs;
+      parentAccessors.push_back(testType->klass);
+      idxs.push(0);
+      while (parentAccessors.size() > 0) {
+        auto& parents = parentAccessors.back()->parents;
+        bool cont = false;
+        bool done = false;
+        for (size_t i = idxs.top(); i < parents.size(); i++) {
+          auto& parent = parents[i];
+          parentAccessors.push_back(parent);
+          if (parent->id == targetType->klass->id) {
+            done = true;
+            break;
+          } else if (parent->parents.size() > 0) {
+            cont = true;
+            break;
+          } else {
+            parentAccessors.pop_back();
+          }
+        }
+        if (done) break;
+        if (cont) continue;
+        parentAccessors.pop_back();
+        idxs.pop();
+      }
+
+      auto id = tempVarIDs[info->inputScope->id]++;
+      auto tmpName = mangleName(info->inputScope.get()) + "_temp_var_" + std::to_string(id);
+
+      source.insertVariableDefinition(source.createType("void", { { CAST::TypeModifierFlag::Pointer } }), tmpName, source.createFetch("NULL"));
+
+      tgt = source.createAssignment(
+        source.createFetch(tmpName),
+        source.createPointer(tgt)
+      );
+      std::shared_ptr<CAST::Expression> result = nullptr;
+      auto basicClassType = source.createType("_Alta_basic_class", { { CAST::TypeModifierFlag::Pointer } });
+      auto regularCast = source.createCast(source.createFetch(tmpName), basicClassType);
+      auto infoStruct = source.createAccessor(source.createDereference(regularCast), "_Alta_class_info_struct");
+      for (size_t i = parentAccessors.size() - 1; i > 0; i--) {
+        auto& curr = parentAccessors[i];
+        auto& parent = parentAccessors[i - 1];
+        auto assgn = source.createAssignment(
+          source.createFetch(tmpName),
+          source.createFunctionCall(source.createFetch("_ALTA_GET_PARENT_STRUCT_PTR"), {
+            source.createCast(
+              source.createFetch(tmpName),
+              source.createType(mangleName(parent.get()), { { CAST::TypeModifierFlag::Pointer } })
+            ),
+            source.createFetch(mangleName(parent.get())),
+            source.createFetch(mangleName(curr.get())),
+          }, true)
+        );
+        std::shared_ptr<CAST::Expression> isBaseStruct = source.createAccessor(
+          source.createAccessor(
+            source.createDereference(
+              source.createCast(
+                assgn,
+                basicClassType
+              )
+            ),
+            "_Alta_class_info_struct"
+          ),
+          "isBaseStruct"
+        );
+        auto expr = source.createBinaryOperation(
+          CAST::OperatorType::And,
+          (i - 1 == 0) ? isBaseStruct : source.createUnaryOperation(
+            CAST::UOperatorType::Not,
+            isBaseStruct
+          ),
+          source.createBinaryOperation(
+            CAST::OperatorType::EqualTo,
+            source.createFunctionCall(
+              source.createFetch("strcmp"),
+              {
+                source.createAccessor(
+                  infoStruct,
+                  "typeName"
+                ),
+                source.createStringLiteral(mangleName(parent.get())),
+              }
+            ),
+            source.createIntegerLiteral(0)
+          )
+        );
+        if (result) {
+          result = source.createBinaryOperation(
+            CAST::OperatorType::And,
+            result,
+            expr
+          );
+        } else {
+          result = expr;
+        }
+      }
+      return source.createMultiExpression({
+        tgt,
+        source.createBinaryOperation(
+          CAST::OperatorType::And,
+          source.createBinaryOperation(
+            CAST::OperatorType::And,
+            source.createUnaryOperation(
+              CAST::UOperatorType::Not,
+              source.createAccessor(
+                infoStruct,
+                "isBaseStruct"
+              )
+            ),
+            source.createBinaryOperation(
+              CAST::OperatorType::EqualTo,
+              source.createFunctionCall(
+                source.createFetch("strcmp"),
+                {
+                  source.createAccessor(
+                    infoStruct,
+                    "typeName"
+                  ),
+                  source.createStringLiteral(mangleName(targetType->klass.get())),
+                }
+              ),
+              source.createIntegerLiteral(0)
+            )
+          ),
+          result
+        ),
+      });
+    } else {
+      return source.createFetch("_Alta_bool_false");
+    }
   }
   return nullptr;
 };
