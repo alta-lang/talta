@@ -2,9 +2,9 @@
 #include "../include/talta/util.hpp"
 
 namespace Talta {
-  std::map<std::string, std::vector<std::string>> moduleIncludes;
-  std::unordered_map<std::string, bool> varargTable;
-  std::unordered_map<std::string, size_t> tempVarIDs;
+  ALTACORE_MAP<std::string, std::vector<std::string>> moduleIncludes;
+  ALTACORE_MAP<std::string, bool> varargTable;
+  ALTACORE_MAP<std::string, size_t> tempVarIDs;
 };
 
 std::vector<std::shared_ptr<Ceetah::AST::Expression>> Talta::CTranspiler::processArgs(std::vector<ALTACORE_VARIANT<std::pair<std::shared_ptr<AltaCore::AST::ExpressionNode>, std::shared_ptr<AltaCore::DH::ExpressionNode>>, std::vector<std::pair<std::shared_ptr<AltaCore::AST::ExpressionNode>, std::shared_ptr<AltaCore::DH::ExpressionNode>>>>> adjustedArguments, std::vector<std::tuple<std::string, std::shared_ptr<AltaCore::DET::Type>, bool, std::string>> parameters) {
@@ -1708,8 +1708,8 @@ void Talta::CTranspiler::transpile(std::shared_ptr<AltaCore::AST::RootNode> alta
   header.insertPreprocessorUndefinition("_ALTA_MODULE_ALL_" + mangledModuleName);
 };
 
-std::map<std::string, std::tuple<std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<AltaCore::DET::Module>>> Talta::recursivelyTranspileToC(std::shared_ptr<AltaCore::AST::RootNode> altaRoot, CTranspiler* transpiler) {
-  std::map<std::string, std::tuple<std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<AltaCore::DET::Module>>> results;
+ALTACORE_MAP<std::string, std::tuple<std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<AltaCore::DET::Module>>> Talta::recursivelyTranspileToC(std::shared_ptr<AltaCore::AST::RootNode> altaRoot, CTranspiler* transpiler) {
+  ALTACORE_MAP<std::string, std::tuple<std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<AltaCore::DET::Module>>> results;
 
   bool deleteIt = false;
   if (transpiler == nullptr) {
