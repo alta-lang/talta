@@ -5,8 +5,6 @@
 #include <ceetah.hpp>
 #include <vector>
 #include <tuple>
-#include <map>
-#include <unordered_map>
 
 namespace Talta {
   std::string escapeName(std::string name);
@@ -18,8 +16,8 @@ namespace Talta {
   std::string headerMangle(AltaCore::DET::Module* item, bool fullName = true);
   std::string headerMangle(AltaCore::DET::ScopeItem* item, bool fullName = true);
 
-  extern std::map<std::string, std::vector<std::string>> moduleIncludes;
-  extern std::unordered_map<std::string, bool> varargTable;
+  extern ALTACORE_MAP<std::string, std::vector<std::string>> moduleIncludes;
+  extern ALTACORE_MAP<std::string, bool> varargTable;
 
   void registerAttributes(AltaCore::Filesystem::Path modulePath);
 
@@ -47,7 +45,7 @@ namespace Talta {
     public:
       void transpile(std::shared_ptr<AltaCore::AST::RootNode> altaRoot);
   };
-  std::map<std::string, std::tuple<std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<AltaCore::DET::Module>>> recursivelyTranspileToC(std::shared_ptr<AltaCore::AST::RootNode> altaRoot, CTranspiler* transpiler = nullptr);
+  ALTACORE_MAP<std::string, std::tuple<std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<AltaCore::DET::Module>>> recursivelyTranspileToC(std::shared_ptr<AltaCore::AST::RootNode> altaRoot, CTranspiler* transpiler = nullptr);
 };
 
 #endif // TALTA_TALTA_HPP
