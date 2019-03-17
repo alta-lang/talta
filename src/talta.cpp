@@ -231,6 +231,9 @@ std::string Talta::mangleName(AltaCore::DET::ScopeItem* item, bool fullName) {
     auto var = dynamic_cast<DET::Variable*>(item);
     itemName = var->name;
     isLiteral = var->isLiteral;
+    if (var->isVariable) {
+      mangled += "_Alta_array_";
+    }
   } else if (nodeType == NodeType::Namespace) {
     auto ns = dynamic_cast<DET::Namespace*>(item);
     itemName = ns->name;
@@ -246,19 +249,19 @@ std::string Talta::mangleName(AltaCore::DET::ScopeItem* item, bool fullName) {
     while (!maybeScope.expired()) {
       auto scope = maybeScope.lock();
       if (!scope->parentModule.expired()) {
-        mangled = mangleName(scope->parentModule.lock().get()) + "_0_" + mangled;
+        mangled += mangleName(scope->parentModule.lock().get()) + "_0_" + mangled;
         maybeScope = std::weak_ptr<DET::Scope>(); // modules are root nodes, stop because we found one
       } else if (!scope->parentFunction.expired()) {
-        mangled = mangleName(scope->parentFunction.lock().get()) + "_0_" + mangled;
+        mangled += mangleName(scope->parentFunction.lock().get()) + "_0_" + mangled;
         maybeScope = scope->parentFunction.lock()->parentScope;
       } else if (!scope->parent.expired()) {
-        mangled = "_4_" + std::to_string(scope->relativeID) + "_0_" + mangled;
+        mangled += "_4_" + std::to_string(scope->relativeID) + "_0_" + mangled;
         maybeScope = scope->parent;
       } else if (!scope->parentNamespace.expired()) {
-        mangled = mangleName(scope->parentNamespace.lock().get()) + "_0_" + mangled;
+        mangled += mangleName(scope->parentNamespace.lock().get()) + "_0_" + mangled;
         maybeScope = scope->parentNamespace.lock()->parentScope;
       } else if (!scope->parentClass.expired()) {
-        mangled = mangleName(scope->parentClass.lock().get()) + "_0_" + mangled;
+        mangled += mangleName(scope->parentClass.lock().get()) + "_0_" + mangled;
         maybeScope = scope->parentClass.lock()->parentScope;
       }
     }
@@ -563,6 +566,9 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
       auto& paramInfo = info->parameters[i];
       auto type = (param->isVariable) ? paramInfo->type->type->point() : paramInfo->type->type;
       auto mangled = mangleName(var.get());
+      if (param->isVariable) {
+        mangled = mangled.substr(12);
+      }
       cParams.push_back({ (param->isVariable ? "_Alta_array_" : "") + mangled, transpileType(type.get()) });
       if (param->isVariable) {
         cParams.push_back({ "_Alta_array_length_" + mangled, size_tType });
@@ -754,6 +760,14 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
   } else if (nodeType == AltaNodeType::Accessor) {
     auto acc = dynamic_cast<AAST::Accessor*>(node);
     auto info = dynamic_cast<DH::Accessor*>(_info);
+    if (info->getsVariableLength) {
+      auto tgt = std::dynamic_pointer_cast<AAST::Fetch>(acc->target);
+      auto tgtInfo = std::dynamic_pointer_cast<DH::Fetch>(info->target);
+      auto mangled = mangleName(tgtInfo->narrowedTo.get());
+      // ("_Alta_array_").length == 12
+      // substr(length + 1) to skip substring
+      return source.createFetch("_Alta_array_length_" + mangled.substr(12));
+    }
     std::shared_ptr<CAST::Expression> result = nullptr;
     size_t refLevel = 0;
     if (info->narrowedTo) {
@@ -1180,6 +1194,9 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
         auto& [name, ptype, isVariable, alias] = constr->parameters[i];
         auto type = (isVariable) ? ptype->point() : ptype;
         auto mangled = mangleName(var.get());
+        if (isVariable) {
+          mangled = mangled.substr(12);
+        }
         params.push_back({ (isVariable ? "_Alta_array_" : "") + mangled, transpileType(type.get()) });
         if (isVariable) {
           params.push_back({ "_Alta_array_length_" + mangled, size_tType });
