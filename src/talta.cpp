@@ -241,6 +241,9 @@ std::string Talta::mangleName(AltaCore::DET::ScopeItem* item, bool fullName) {
   } else if (nodeType == NodeType::Class) {
     auto klass = dynamic_cast<DET::Class*>(item);
     itemName = klass->name;
+    for (auto arg: klass->genericArguments) {
+      itemName += "_2_" + mangleType(arg.get());
+    }
     isLiteral = false;
   }
 
@@ -299,8 +302,8 @@ std::vector<uint8_t> Talta::CTranspiler::convertTypeModifiers(std::vector<uint8_
   return altaModifiers;
 };
 
-void Talta::CTranspiler::headerPredeclaration(std::string def, std::string mangledModName) {
-  header.insertPreprocessorConditional("(defined(" + def + ") || defined(_ALTA_MODULE_ALL_" + mangledModName + ")) && !defined(_DEFINED_" + def + ')');
+void Talta::CTranspiler::headerPredeclaration(std::string def, std::string mangledModName, bool includeAll) {
+  header.insertPreprocessorConditional("(defined(" + def + ")" + (includeAll ? (" || defined(_ALTA_MODULE_ALL_" + mangledModName + ')') : "") + ") && !defined(_DEFINED_" + def + ')');
   header.insertPreprocessorUndefinition(def);
   header.insertPreprocessorDefinition("_DEFINED_" + def);
 };
@@ -323,6 +326,19 @@ void Talta::CTranspiler::defineFunctionalType(std::shared_ptr<AltaCore::DET::Typ
   }
   target.insertTypeDefinition(name, target.createType(transpileType(type->returnType.get()), cParams, mods));
   target.exitInsertionPoint();
+};
+
+void Talta::CTranspiler::includeGeneric(std::shared_ptr<AltaCore::DET::ScopeItem> generic, bool inHeader) {
+  if (generic->genericParameterCount < 1) return;
+
+  auto& target = inHeader ? header : source;
+
+  auto importModule = AltaCore::Util::getModule(generic->parentScope.lock().get()).lock();
+  auto mangledImportName = mangleName(importModule.get());
+  auto mangledParentName = mangleName(currentModule.get());
+
+  target.insertPreprocessorDefinition(headerMangle(generic.get()));
+  target.insertPreprocessorInclusion("_ALTA_MODULE_" + mangledParentName + "_0_INCLUDE_" + mangledImportName, Ceetah::AST::InclusionType::Computed);
 };
 
 void Talta::CTranspiler::stackBookkeepingStart(std::shared_ptr<AltaCore::DET::Scope> scope) {
@@ -545,7 +561,17 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     auto aFunc = dynamic_cast<AAST::FunctionDefinitionNode*>(node);
     auto info = dynamic_cast<DH::FunctionDefinitionNode*>(_info);
 
-    if (!info->function->isExport) {
+    if (!info->function->isExport && !info->function->isMethod) {
+      for (auto& hoistedGeneric: info->function->publicHoistedGenerics) {
+        includeGeneric(hoistedGeneric);
+      }
+    }
+
+    for (auto& hoistedGeneric: info->function->privateHoistedGenerics) {
+      includeGeneric(hoistedGeneric);
+    }
+
+    if (!info->function->isExport && !info->function->isMethod) {
       for (auto& hoistedType: info->function->publicHoistedFunctionalTypes) {
         defineFunctionalType(hoistedType);
       }
@@ -633,6 +659,9 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     source.exitInsertionPoint();
 
     if (info->function->isExport || info->function->isMethod) {
+      for (auto& hoistedGeneric: info->function->publicHoistedGenerics) {
+        includeGeneric(hoistedGeneric, true);
+      }
       for (auto& hoistedType: info->function->publicHoistedFunctionalTypes) {
         defineFunctionalType(hoistedType, true);
       }
@@ -1024,146 +1053,186 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     return source.createTernaryOperation(transpile(cond->test.get(), info->test.get()), transpile(cond->primaryResult.get(), info->primaryResult.get()), transpile(cond->secondaryResult.get(), info->secondaryResult.get()));
   } else if (nodeType == AltaNodeType::ClassDefinitionNode) {
     auto aClass = dynamic_cast<AAST::ClassDefinitionNode*>(node);
-    auto info = dynamic_cast<DH::ClassDefinitionNode*>(_info);
+    auto klassInfo = dynamic_cast<DH::ClassDefinitionNode*>(_info);
 
-    for (auto& hoistedType: info->klass->hoistedFunctionalTypes) {
-      defineFunctionalType(hoistedType);
-    }
+    auto detailLoop = [&](DH::ClassDefinitionNode* info) {
+      Ceetah::Builder sourceBuilderCache(nullptr);
+      bool isGeneric = false;
 
-    std::vector<std::pair<std::string, std::shared_ptr<CAST::Type>>> members;
-    members.emplace_back("_Alta_class_info_struct", source.createType("_Alta_class_info"));
-    for (auto& parent: info->klass->parents) {
-      auto mangledParent = mangleName(parent.get());
-      members.emplace_back(mangledParent, source.createType(mangledParent));
-    }
-    for (auto item: info->klass->scope->items) {
-      if (item->nodeType() == AltaCore::DET::NodeType::Variable && item->name != "this") {
-        auto var = std::dynamic_pointer_cast<AltaCore::DET::Variable>(item);
-        members.emplace_back(mangleName(var.get()), transpileType(var->type.get()));
+      auto mod = AltaCore::Util::getModule(info->klass->parentScope.lock().get()).lock();
+      auto mangledModName = mangleName(mod.get());
+
+      if (info->klass->genericArguments.size() > 0) {
+        auto root = std::make_shared<CAST::RootNode>();
+        generics.push_back(std::make_pair(info->klass, root));
+        sourceBuilderCache = source;
+        source = Ceetah::Builder(root);
+        isGeneric = true;
       }
-    }
-    
-    auto mod = AltaCore::Util::getModule(info->klass->parentScope.lock().get()).lock();
-    auto mangledModName = mangleName(mod.get());
-    auto mangledClassName = mangleName(info->klass.get());
-    headerPredeclaration("_ALTA_CLASS_" + mangledClassName, mangledModName);
-    header.insertStructureDefinition("_s_" + mangledClassName, members);
-    header.insertTypeDefinition(mangledClassName, header.createType("_s_" + mangledClassName, {}, true));
 
-    auto self = header.createType(mangledClassName, { { CAST::TypeModifierFlag::Pointer } });
-    header.insertFunctionDeclaration("_init_" + mangledClassName, { std::make_tuple("_Alta_self", self) }, self);
+      std::vector<std::pair<std::string, std::shared_ptr<CAST::Type>>> members;
+      members.emplace_back("_Alta_class_info_struct", source.createType("_Alta_class_info"));
+      for (auto& parent: info->klass->parents) {
+        auto mangledParent = mangleName(parent.get());
+        members.emplace_back(mangledParent, source.createType(mangledParent));
+      }
+      for (auto item: info->klass->scope->items) {
+        if (item->nodeType() == AltaCore::DET::NodeType::Variable && item->name != "this") {
+          auto var = std::dynamic_pointer_cast<AltaCore::DET::Variable>(item);
+          members.emplace_back(mangleName(var.get()), transpileType(var->type.get()));
+        }
+      }
 
-    source.insertFunctionDefinition("_init_" + mangledClassName, { std::make_tuple("_Alta_self", self) }, self);
+      auto mangledClassName = mangleName(info->klass.get());
+      headerPredeclaration("_ALTA_CLASS_" + mangledClassName, mangledModName, !isGeneric);
 
-    auto infoStruct = source.createAccessor(source.createDereference(source.createFetch("_Alta_self")), "_Alta_class_info_struct");
+      for (auto& hoistedType: info->klass->hoistedFunctionalTypes) {
+        defineFunctionalType(hoistedType);
+      }
 
-    source.insertExpressionStatement(
-      source.createAssignment(
+      for (auto& hoistedGeneric: info->klass->privateHoistedGenerics) {
+        includeGeneric(hoistedGeneric);
+      }
+
+      for (auto arg: info->klass->genericArguments) {
+        if (arg->klass) {
+          auto dependency = AltaCore::Util::getModule(arg->klass->parentScope.lock().get()).lock();
+          auto mangledImportName = mangleName(dependency.get());
+          header.insertPreprocessorDefinition(headerMangle(arg->klass.get()));
+          header.insertPreprocessorInclusion("_ALTA_MODULE_" + mangledModName + "_0_INCLUDE_" + mangledImportName, CAST::InclusionType::Computed);
+        }
+      }
+
+      header.insertStructureDefinition("_s_" + mangledClassName, members);
+      header.insertTypeDefinition(mangledClassName, header.createType("_s_" + mangledClassName, {}, true));
+
+      auto self = header.createType(mangledClassName, { { CAST::TypeModifierFlag::Pointer } });
+      header.insertFunctionDeclaration("_init_" + mangledClassName, { std::make_tuple("_Alta_self", self) }, self);
+
+      source.insertFunctionDefinition("_init_" + mangledClassName, { std::make_tuple("_Alta_self", self) }, self);
+
+      auto infoStruct = source.createAccessor(source.createDereference(source.createFetch("_Alta_self")), "_Alta_class_info_struct");
+
+      source.insertExpressionStatement(
+        source.createAssignment(
+          source.createAccessor(
+            infoStruct,
+            "typeName"
+          ),
+          source.createStringLiteral(mangledClassName)
+        )
+      );
+
+      source.insertExpressionStatement(
+        source.createAssignment(
+          source.createAccessor(
+            infoStruct,
+            "destroyed"
+          ),
+          source.createFetch("_Alta_bool_false")
+        )
+      );
+
+      source.insertExpressionStatement(
+        source.createAssignment(
+          source.createAccessor(
+            infoStruct,
+            "persistent"
+          ),
+          source.createFetch("_Alta_bool_false")
+        )
+      );
+
+      
+      source.insertExpressionStatement(source.createAssignment(
         source.createAccessor(
           infoStruct,
-          "typeName"
+          "isBaseStruct"
         ),
-        source.createStringLiteral(mangledClassName)
-      )
-    );
+        source.createFetch("_Alta_bool_true")
+      ));
 
-    source.insertExpressionStatement(
-      source.createAssignment(
+      source.insertExpressionStatement(source.createAssignment(
         source.createAccessor(
           infoStruct,
-          "destroyed"
+          "parentTypeName"
         ),
-        source.createFetch("_Alta_bool_false")
-      )
-    );
+        source.createStringLiteral("")
+      ));
 
-    source.insertExpressionStatement(
-      source.createAssignment(
-        source.createAccessor(
-          infoStruct,
-          "persistent"
-        ),
-        source.createFetch("_Alta_bool_false")
-      )
-    );
+      std::shared_ptr<CAST::Expression> dtor = nullptr;
+      if (info->klass->destructor) {
+        dtor = source.createFetch("_d_" + mangleName(info->klass->destructor.get()));
+      } else {
+        dtor = source.createFetch("NULL");
+      }
 
-    
-    source.insertExpressionStatement(source.createAssignment(
-      source.createAccessor(
-        infoStruct,
-        "isBaseStruct"
-      ),
-      source.createFetch("_Alta_bool_true")
-    ));
+      source.insertExpressionStatement(
+        source.createAssignment(
+          source.createAccessor(
+            infoStruct,
+            "destructor"
+          ),
+          dtor
+        )
+      );
 
-    source.insertExpressionStatement(source.createAssignment(
-      source.createAccessor(
-        infoStruct,
-        "parentTypeName"
-      ),
-      source.createStringLiteral("")
-    ));
+      enum class LoopKind {
+        Members,
+        All,
+      };
 
-    std::shared_ptr<CAST::Expression> dtor = nullptr;
-    if (info->klass->destructor) {
-      dtor = source.createFetch("_d_" + mangleName(info->klass->destructor.get()));
-    } else {
-      dtor = source.createFetch("NULL");
-    }
-
-    source.insertExpressionStatement(
-      source.createAssignment(
-        source.createAccessor(
-          infoStruct,
-          "destructor"
-        ),
-        dtor
-      )
-    );
-
-    enum class LoopKind {
-      Members,
-      All,
-    };
-
-    auto loop = [&](std::vector<std::shared_ptr<AAST::ClassStatementNode>>& tgt, std::vector<std::shared_ptr<DH::ClassStatementNode>> infos, LoopKind kind = LoopKind::All) -> void {
-      for (size_t i = 0; i < tgt.size(); i++) {
-        auto& stmt = tgt[i];
-        auto& stmtInfo = infos[i];
-        if (kind == LoopKind::Members && stmt->nodeType() == AAST::NodeType::ClassMemberDefinitionStatement) {
-          auto member = std::dynamic_pointer_cast<AAST::ClassMemberDefinitionStatement>(stmt);
-          auto memberInfo = std::dynamic_pointer_cast<DH::ClassMemberDefinitionStatement>(stmtInfo);
-          auto mangledMemberName = mangleName(memberInfo->varDef->variable.get());
-          if (member->varDef->initializationExpression) {
-            source.insertExpressionStatement(source.createAssignment(source.createAccessor(source.createDereference(source.createFetch("_Alta_self")), mangledMemberName), transpile(member->varDef->initializationExpression.get(), memberInfo->varDef->initializationExpression.get())));
+      auto loop = [&](std::vector<std::shared_ptr<AAST::ClassStatementNode>>& tgt, std::vector<std::shared_ptr<DH::ClassStatementNode>> infos, LoopKind kind = LoopKind::All) -> void {
+        for (size_t i = 0; i < tgt.size(); i++) {
+          auto& stmt = tgt[i];
+          auto& stmtInfo = infos[i];
+          if (kind == LoopKind::Members && stmt->nodeType() == AAST::NodeType::ClassMemberDefinitionStatement) {
+            auto member = std::dynamic_pointer_cast<AAST::ClassMemberDefinitionStatement>(stmt);
+            auto memberInfo = std::dynamic_pointer_cast<DH::ClassMemberDefinitionStatement>(stmtInfo);
+            auto mangledMemberName = mangleName(memberInfo->varDef->variable.get());
+            if (member->varDef->initializationExpression) {
+              source.insertExpressionStatement(source.createAssignment(source.createAccessor(source.createDereference(source.createFetch("_Alta_self")), mangledMemberName), transpile(member->varDef->initializationExpression.get(), memberInfo->varDef->initializationExpression.get())));
+            }
+          }
+          if (kind == LoopKind::All) {
+            transpile(stmt.get(), stmtInfo.get());
           }
         }
-        if (kind == LoopKind::All) {
-          transpile(stmt.get(), stmtInfo.get());
-        }
+      };
+      
+      loop(aClass->statements, info->statements, LoopKind::Members);
+
+      source.insertReturnDirective(source.createFetch("_Alta_self"));
+      source.exitInsertionPoint();
+
+      loop(aClass->statements, info->statements);
+
+      if (info->createDefaultConstructor) {
+        transpile(info->defaultConstructor.get(), info->defaultConstructorDetail.get());
+      }
+
+      if (info->createDefaultDestructor) {
+        transpile(info->defaultDestructor.get(), info->defaultDestructorDetail.get());
+      }
+
+      if (info->createDefaultCopyConstructor) {
+        transpile(info->defaultCopyConstructor.get(), info->defaultCopyConstructorDetail.get());
+      }
+
+      header.exitInsertionPoint();
+
+      if (isGeneric) {
+        source = sourceBuilderCache;
       }
     };
-    
-    loop(aClass->statements, info->statements, LoopKind::Members);
 
-    source.insertReturnDirective(source.createFetch("_Alta_self"));
-    source.exitInsertionPoint();
-
-    loop(aClass->statements, info->statements);
-
-    if (info->createDefaultConstructor) {
-      transpile(info->defaultConstructor.get(), info->defaultConstructorDetail.get());
+    if (aClass->generics.size() > 0) {
+      for (auto inst: klassInfo->genericInstantiations) {
+        detailLoop(inst.get());
+      }
+    } else {
+      detailLoop(klassInfo);
     }
-
-    if (info->createDefaultDestructor) {
-      transpile(info->defaultDestructor.get(), info->defaultDestructorDetail.get());
-    }
-
-    if (info->createDefaultCopyConstructor) {
-      transpile(info->defaultCopyConstructor.get(), info->defaultCopyConstructorDetail.get());
-    }
-
-    header.exitInsertionPoint();
   } else if (nodeType == AAST::NodeType::ClassSpecialMethodDefinitionStatement) {
     auto special = dynamic_cast<AAST::ClassSpecialMethodDefinitionStatement*>(node);
     auto info = dynamic_cast<DH::ClassSpecialMethodDefinitionStatement*>(_info);
@@ -1700,33 +1769,33 @@ void Talta::CTranspiler::transpile(std::shared_ptr<AltaCore::AST::RootNode> alta
   hRoot = std::make_shared<Ceetah::AST::RootNode>();
   source = Ceetah::Builder(cRoot);
   header = Ceetah::Builder(hRoot);
+  generics.clear();
+  currentModule = altaRoot->info->module;
 
-  auto& info = altaRoot->info;
-
-  auto mangledModuleName = mangleName(info->module.get());
+  auto mangledModuleName = mangleName(currentModule.get());
 
   header.insertPreprocessorInclusion("_ALTA_RUNTIME_COMMON_HEADER_" + mangledModuleName, Ceetah::AST::InclusionType::Computed);
 
-  header.insertPreprocessorConditional("!defined(_ALTA_MODULE_HEADER_" + mangledModuleName + ")");
-  header.insertPreprocessorDefinition("_ALTA_MODULE_HEADER_" + mangledModuleName);
+  //header.insertPreprocessorConditional("!defined(_ALTA_MODULE_HEADER_" + mangledModuleName + ")");
+  //header.insertPreprocessorDefinition("_ALTA_MODULE_HEADER_" + mangledModuleName);
 
-  for (auto& incl: moduleIncludes[info->module->path.toString()]) {
+  for (auto& incl: moduleIncludes[currentModule->path.toString()]) {
     header.insertPreprocessorInclusion(incl, Ceetah::AST::InclusionType::System);
   }
 
   for (size_t i = 0; i < altaRoot->statements.size(); i++) {
     auto& stmt = altaRoot->statements[i];
-    auto& stmtInfo = info->statements[i];
+    auto& stmtInfo = altaRoot->info->statements[i];
     transpile(stmt.get(), stmtInfo.get());
   }
 
-  header.exitInsertionPoint();
+  //header.exitInsertionPoint();
 
   header.insertPreprocessorUndefinition("_ALTA_MODULE_ALL_" + mangledModuleName);
 };
 
-ALTACORE_MAP<std::string, std::tuple<std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<AltaCore::DET::Module>>> Talta::recursivelyTranspileToC(std::shared_ptr<AltaCore::AST::RootNode> altaRoot, CTranspiler* transpiler) {
-  ALTACORE_MAP<std::string, std::tuple<std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<AltaCore::DET::Module>>> results;
+ALTACORE_MAP<std::string, std::tuple<std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<Ceetah::AST::RootNode>, std::vector<std::shared_ptr<Ceetah::AST::RootNode>>, std::vector<std::shared_ptr<AltaCore::DET::ScopeItem>>, std::shared_ptr<AltaCore::DET::Module>>> Talta::recursivelyTranspileToC(std::shared_ptr<AltaCore::AST::RootNode> altaRoot, CTranspiler* transpiler) {
+  ALTACORE_MAP<std::string, std::tuple<std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<Ceetah::AST::RootNode>, std::vector<std::shared_ptr<Ceetah::AST::RootNode>>, std::vector<std::shared_ptr<AltaCore::DET::ScopeItem>>, std::shared_ptr<AltaCore::DET::Module>>> results;
 
   bool deleteIt = false;
   if (transpiler == nullptr) {
@@ -1735,7 +1804,13 @@ ALTACORE_MAP<std::string, std::tuple<std::shared_ptr<Ceetah::AST::RootNode>, std
   }
 
   transpiler->transpile(altaRoot);
-  results[altaRoot->info->module->name] = { transpiler->cRoot, transpiler->hRoot, altaRoot->info->module };
+  std::vector<std::shared_ptr<Ceetah::AST::RootNode>> gRoots;
+  std::vector<std::shared_ptr<AltaCore::DET::ScopeItem>> gItems;
+  for (auto& generic: transpiler->generics) {
+    gRoots.push_back(generic.second);
+    gItems.push_back(generic.first);
+  }
+  results[altaRoot->info->module->name] = { transpiler->cRoot, transpiler->hRoot, gRoots, gItems, altaRoot->info->module };
   for (auto& dep: altaRoot->info->dependencyASTs) {
     auto other = recursivelyTranspileToC(dep, transpiler);
     for (auto& [name, item]: other) {
