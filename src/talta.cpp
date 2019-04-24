@@ -1761,6 +1761,18 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     } else {
       return source.createFetch("_Alta_bool_false");
     }
+  } else if (nodeType == AltaNodeType::ForLoopStatement) {
+    auto loop = dynamic_cast<AAST::ForLoopStatement*>(node);
+    auto info = dynamic_cast<DH::ForLoopStatement*>(_info);
+    source.insertBlock();
+    source.insertExpressionStatement(transpile(loop->initializer.get(), info->initializer.get()));
+    source.insertWhileLoop(transpile(loop->condition.get(), info->condition.get()));
+    source.insertBlock();
+    transpile(loop->body.get(), info->body.get());
+    source.insertExpressionStatement(transpile(loop->increment.get(), info->increment.get()));
+    source.exitInsertionPoint();
+    source.exitInsertionPoint();
+    source.exitInsertionPoint();
   }
   return nullptr;
 };
