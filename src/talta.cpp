@@ -1773,6 +1773,56 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     source.exitInsertionPoint();
     source.exitInsertionPoint();
     source.exitInsertionPoint();
+  } else if (nodeType == AltaNodeType::RangedForLoopStatement) {
+    auto loop = dynamic_cast<AAST::RangedForLoopStatement*>(node);
+    auto info = dynamic_cast<DH::RangedForLoopStatement*>(_info);
+
+    auto mangledCounter = mangleName(info->counter.get());
+
+    source.insertBlock();
+    source.insertVariableDefinition(
+      transpileType(info->counterType->type.get()),
+      mangledCounter,
+      transpile(loop->start.get(), info->start.get())
+    );
+
+    CAST::OperatorType comparator = CAST::OperatorType::LessThan;
+    if (loop->decrement) {
+      if (loop->inclusive) {
+        comparator = CAST::OperatorType::GreaterThanOrEqualTo;
+      } else {
+        comparator = CAST::OperatorType::GreaterThan;
+      }
+    } else {
+      if (loop->inclusive) {
+        comparator = CAST::OperatorType::LessThanOrEqualTo;
+      } else {
+        comparator = CAST::OperatorType::LessThan;
+      }
+    }
+
+    source.insertWhileLoop(
+      source.createBinaryOperation(
+        comparator,
+        source.createFetch(mangledCounter),
+        transpile(loop->end.get(), info->end.get())
+      )
+    );
+    source.insertBlock();
+    transpile(loop->body.get(), info->body.get());
+    source.insertExpressionStatement(
+      source.createAssignment(
+        source.createFetch(mangledCounter),
+        source.createBinaryOperation(
+          (loop->decrement) ? CAST::OperatorType::Subtraction : CAST::OperatorType::Addition,
+          source.createFetch(mangledCounter),
+          source.createIntegerLiteral(1)
+        )
+      )
+    );
+    source.exitInsertionPoint();
+    source.exitInsertionPoint();
+    source.exitInsertionPoint();
   }
   return nullptr;
 };
