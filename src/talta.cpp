@@ -1823,6 +1823,11 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     source.exitInsertionPoint();
     source.exitInsertionPoint();
     source.exitInsertionPoint();
+  } else if (nodeType == AltaNodeType::UnaryOperation) {
+    auto op = dynamic_cast<AAST::UnaryOperation*>(node);
+    auto info = dynamic_cast<DH::UnaryOperation*>(_info);
+
+    return source.createUnaryOperation((CAST::UOperatorType)op->type, transpile(op->target.get(), info->target.get()));
   }
   return nullptr;
 };
