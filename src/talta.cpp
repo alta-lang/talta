@@ -1091,7 +1091,7 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
       }
 
       for (auto& hoistedGeneric: info->klass->privateHoistedGenerics) {
-        includeGeneric(hoistedGeneric);
+        includeGeneric(hoistedGeneric, true);
       }
 
       for (auto arg: info->klass->genericArguments) {
