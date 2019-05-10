@@ -119,6 +119,18 @@ std::string Talta::mangleType(AltaCore::DET::Type* type) {
     if (mod & (uint8_t)TypeModifier::Reference) {
       mangled += "ref_3_";
     }
+    if (mod & (uint8_t)TypeModifier::Long) {
+      mangled += "long_3_";
+    }
+    if (mod & (uint8_t)TypeModifier::Short) {
+      mangled += "short_3_";
+    }
+    if (mod & (uint8_t)TypeModifier::Unsigned) {
+      mangled += "unsigned_3_";
+    }
+    if (mod & (uint8_t)TypeModifier::Signed) {
+      mangled += "signed_3_";
+    }
   }
 
   mangled += cTypeNameify(type, true);
