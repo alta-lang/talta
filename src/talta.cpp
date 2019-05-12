@@ -1839,7 +1839,11 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     auto op = dynamic_cast<AAST::UnaryOperation*>(node);
     auto info = dynamic_cast<DH::UnaryOperation*>(_info);
 
-    return source.createUnaryOperation((CAST::UOperatorType)op->type, transpile(op->target.get(), info->target.get()));
+    return source.createUnaryOperation(
+      (CAST::UOperatorType)op->type,
+      transpile(op->target.get(), info->target.get()),
+      op->type == AAST::UOperatorType::PostIncrement || op->type == AAST::UOperatorType::PostDecrement
+    );
   } else if (nodeType == AltaNodeType::SizeofOperation) {
     auto op = dynamic_cast<AAST::SizeofOperation*>(node);
     auto info = dynamic_cast<DH::SizeofOperation*>(_info);
