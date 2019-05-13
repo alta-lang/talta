@@ -924,7 +924,7 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
       val = doCopyCtor(expr, assign->value, info->value);
     }
 
-    return source.createAssignment(tgt, val);
+    return source.createAssignment(tgt, val, (CAST::AssignmentType)info->type);
   } else if (nodeType == AltaNodeType::BooleanLiteralNode) {
     auto boolLit = dynamic_cast<AAST::BooleanLiteralNode*>(node);
     if (boolLit->value) {
