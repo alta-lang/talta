@@ -97,6 +97,10 @@ std::string Talta::cTypeNameify(AltaCore::DET::Type* type, bool mangled) {
         return "_Alta_bool";
       case NT::Void:
         return "void";
+      case NT::Double:
+        return "double";
+      case NT::Float:
+        return "float";
       default:
         throw std::runtime_error("ok, wtaf.");
     }
@@ -1849,6 +1853,11 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     auto info = dynamic_cast<DH::SizeofOperation*>(_info);
 
     return source.createSizeof(transpileType(info->target->type.get()));
+  } else if (nodeType == AltaNodeType::FloatingPointLiteralNode) {
+    auto deci = dynamic_cast<AAST::FloatingPointLiteralNode*>(node);
+    auto info = dynamic_cast<DH::FloatingPointLiteralNode*>(_info);
+
+    return source.createIntegerLiteral(deci->raw);
   }
   return nullptr;
 };
