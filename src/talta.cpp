@@ -246,7 +246,12 @@ std::string Talta::mangleName(AltaCore::DET::ScopeItem* item, bool fullName) {
   } else if (nodeType == NodeType::Variable) {
     auto var = dynamic_cast<DET::Variable*>(item);
     itemName = var->name;
-    isLiteral = var->isLiteral;
+    if (auto ps = var->parentScope.lock()) {
+      if (auto pc = ps->parentClass.lock()) {
+        isLiteral = pc->isLiteral;
+      }
+    }
+    isLiteral = isLiteral || var->isLiteral;
     if (var->isVariable) {
       mangled += "_Alta_array_";
     }
@@ -260,7 +265,7 @@ std::string Talta::mangleName(AltaCore::DET::ScopeItem* item, bool fullName) {
     for (auto arg: klass->genericArguments) {
       itemName += "_2_" + mangleType(arg.get());
     }
-    isLiteral = false;
+    isLiteral = klass->isLiteral;
   }
 
   if (!isLiteral && fullName) {
@@ -297,7 +302,7 @@ header.insertPreprocessorInclusion("_ALTA_MODULE_" + mangleName(altaRoot->$modul
 */
 
 std::shared_ptr<Ceetah::AST::Type> Talta::CTranspiler::transpileType(AltaCore::DET::Type* type) {
-  return source.createType(cTypeNameify(type), convertTypeModifiers(type->modifiers));
+  return source.createType(cTypeNameify(type), convertTypeModifiers(type->modifiers), !type->isNative && !type->klass->isTyped);
 };
 
 std::vector<uint8_t> Talta::CTranspiler::convertTypeModifiers(std::vector<uint8_t> altaModifiers) {
@@ -1103,7 +1108,7 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
       headerPredeclaration("_ALTA_CLASS_" + mangledClassName, mangledModName, !isGeneric);
 
       for (auto& hoistedType: info->klass->hoistedFunctionalTypes) {
-        defineFunctionalType(hoistedType);
+        defineFunctionalType(hoistedType, true);
       }
 
       for (auto& hoistedGeneric: info->klass->privateHoistedGenerics) {
@@ -1545,6 +1550,11 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
           mangledClass
         )
       );
+    } else if (info->klass->isStructure) {
+      if (args.size() < 1) {
+        args.push_back(source.createIntegerLiteral(0));
+      }
+      return source.createArrayLiteral(args, source.createType(mangleName(info->klass.get()), {}, !info->klass->isTyped));
     } else {
       return source.createFunctionCall(source.createFetch("_cn_" + mangledCtor), args);
     }
@@ -1858,6 +1868,41 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     auto info = dynamic_cast<DH::FloatingPointLiteralNode*>(_info);
 
     return source.createIntegerLiteral(deci->raw);
+  } else if (nodeType == AltaNodeType::StructureDefinitionStatement) {
+    auto structure = dynamic_cast<AAST::StructureDefinitionStatement*>(node);
+    auto info = dynamic_cast<DH::StructureDefinitionStatement*>(_info);
+
+    if (info->isExternal) return nullptr;
+
+    auto mod = info->structure->parentScope.lock()->parentModule.lock();
+    auto mangledModName = mangleName(mod.get());
+    auto mangledClassName = mangleName(info->structure.get());
+    headerPredeclaration("_ALTA_CLASS_" + mangledClassName, mangledModName, true);
+
+    for (auto& hoistedType: info->structure->hoistedFunctionalTypes) {
+      defineFunctionalType(hoistedType, info->isExport);
+    }
+
+    for (auto& hoistedGeneric: info->structure->privateHoistedGenerics) {
+      includeGeneric(hoistedGeneric, info->isExport);
+    }
+
+    auto& target = info->isExport ? header : source;
+
+    std::vector<std::pair<std::string, std::shared_ptr<CAST::Type>>> members;
+
+    for (auto& item: info->structure->scope->items) {
+      if (auto var = std::dynamic_pointer_cast<AltaCore::DET::Variable>(item)) {
+        members.push_back(std::make_pair(mangleName(var.get()), transpileType(var->type.get())));
+      }
+    }
+
+    auto name = info->isLiteral ? structure->name : mangledClassName;
+    target.insertStructureDefinition((info->isTyped ? "_struct_" : "") + name, members);
+    
+    if (info->isTyped) {
+      target.insertTypeDefinition(name, target.createType("_struct_" + name, {}, true));
+    }
   }
   return nullptr;
 };
