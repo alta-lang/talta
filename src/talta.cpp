@@ -5,6 +5,19 @@ namespace Talta {
   ALTACORE_MAP<std::string, std::vector<std::string>> moduleIncludes;
   ALTACORE_MAP<std::string, bool> varargTable;
   ALTACORE_MAP<std::string, size_t> tempVarIDs;
+
+  std::shared_ptr<AltaCore::DET::ScopeItem> followAlias(std::shared_ptr<AltaCore::DET::ScopeItem> maybeAlias) {
+    while (auto alias = std::dynamic_pointer_cast<AltaCore::DET::Alias>(maybeAlias)) {
+      maybeAlias = alias->target;
+    }
+    return maybeAlias;
+  };
+  AltaCore::DET::ScopeItem* followAlias(AltaCore::DET::ScopeItem* maybeAlias) {
+    while (auto alias = dynamic_cast<AltaCore::DET::Alias*>(maybeAlias)) {
+      maybeAlias = alias->target.get();
+    }
+    return maybeAlias;
+  };
 };
 
 std::vector<std::shared_ptr<Ceetah::AST::Expression>> Talta::CTranspiler::processArgs(std::vector<ALTACORE_VARIANT<std::pair<std::shared_ptr<AltaCore::AST::ExpressionNode>, std::shared_ptr<AltaCore::DH::ExpressionNode>>, std::vector<std::pair<std::shared_ptr<AltaCore::AST::ExpressionNode>, std::shared_ptr<AltaCore::DH::ExpressionNode>>>>> adjustedArguments, std::vector<std::tuple<std::string, std::shared_ptr<AltaCore::DET::Type>, bool, std::string>> parameters) {
@@ -180,6 +193,8 @@ std::string Talta::headerMangle(AltaCore::DET::Module* item, bool fullName) {
   return "_ALTA_MODULE_" + mangleName(item, fullName);
 };
 std::string Talta::headerMangle(AltaCore::DET::ScopeItem* item, bool fullName) {
+  item = followAlias(item);
+
   using NodeType = AltaCore::DET::NodeType;
   auto nodeType = item->nodeType();
 
@@ -225,6 +240,8 @@ std::string Talta::mangleName(AltaCore::DET::Scope* scope, bool fullName) {
   return mangled;
 };
 std::string Talta::mangleName(AltaCore::DET::ScopeItem* item, bool fullName) {
+  item = followAlias(item);
+
   using NodeType = AltaCore::DET::NodeType;
   namespace DET = AltaCore::DET;
   auto nodeType = item->nodeType();
@@ -1902,6 +1919,13 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     
     if (info->isTyped) {
       target.insertTypeDefinition(name, target.createType("_struct_" + name, {}, true));
+    }
+  } else if (nodeType == AltaNodeType::ExportStatement) {
+    auto state = dynamic_cast<AAST::ExportStatement*>(node);
+    auto info = dynamic_cast<DH::ExportStatement*>(_info);
+
+    if (state->externalTarget) {
+      transpile(state->externalTarget.get(), info->externalTarget.get());
     }
   }
   return nullptr;
