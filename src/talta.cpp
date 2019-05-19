@@ -114,6 +114,8 @@ std::string Talta::cTypeNameify(AltaCore::DET::Type* type, bool mangled) {
         return "double";
       case NT::Float:
         return "float";
+      case NT::UserDefined:
+        return type->userDefinedName;
       default:
         throw std::runtime_error("ok, wtaf.");
     }
