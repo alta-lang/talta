@@ -1927,6 +1927,38 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     if (state->externalTarget) {
       transpile(state->externalTarget.get(), info->externalTarget.get());
     }
+  } else if (nodeType == AltaNodeType::FunctionDeclarationNode) {
+    auto func = dynamic_cast<AAST::FunctionDeclarationNode*>(node);
+    auto info = dynamic_cast<DH::FunctionDeclarationNode*>(_info);
+
+    if (!info->function->isExport && !info->function->isMethod) {
+      for (auto& hoistedGeneric: info->function->publicHoistedGenerics) {
+        includeGeneric(hoistedGeneric);
+      }
+    }
+
+    for (auto& hoistedGeneric: info->function->privateHoistedGenerics) {
+      includeGeneric(hoistedGeneric);
+    }
+
+    if (!info->function->isExport && !info->function->isMethod) {
+      for (auto& hoistedType: info->function->publicHoistedFunctionalTypes) {
+        defineFunctionalType(hoistedType);
+      }
+    }
+
+    for (auto& hoistedType: info->function->hoistedFunctionalTypes) {
+      defineFunctionalType(hoistedType);
+    }
+
+    if (info->function->isExport || info->function->isMethod) {
+      for (auto& hoistedGeneric: info->function->publicHoistedGenerics) {
+        includeGeneric(hoistedGeneric, true);
+      }
+      for (auto& hoistedType: info->function->publicHoistedFunctionalTypes) {
+        defineFunctionalType(hoistedType, true);
+      }
+    }
   }
   return nullptr;
 };
@@ -1956,6 +1988,10 @@ void Talta::CTranspiler::transpile(std::shared_ptr<AltaCore::AST::RootNode> alta
   }
 
   //header.exitInsertionPoint();
+
+  for (auto& type: currentModule->hoistedFunctionalTypes) {
+    defineFunctionalType(type);
+  }
 
   header.insertPreprocessorUndefinition("_ALTA_MODULE_ALL_" + mangledModuleName);
 };
