@@ -164,7 +164,7 @@ std::string Talta::escapeName(std::string name) {
    * Escapes 0-30 are reserved for internal use (since they're control characters in ASCII anyways).
    * `_0_` is reserved for scope item name separation
    * `_1_` is reserved for function parameter type separation
-   * `_2_` is reserved for generic instantiation argument separation (TBD later)
+   * `_2_` is reserved for generic instantiation argument separation
    * `_3_` is reserved for type modifier separation
    * `_4_` is reserved for scope identifier delimination
    * `_5_` is reserved for version delimitation
@@ -254,6 +254,9 @@ std::string Talta::mangleName(AltaCore::DET::ScopeItem* item, bool fullName) {
   if (nodeType == NodeType::Function) {
     auto func = dynamic_cast<DET::Function*>(item);
     itemName = func->name;
+    for (auto arg: func->genericArguments) {
+      itemName += "_2_" + mangleType(arg.get());
+    }
     isLiteral = func->isLiteral;
 
     if (!isLiteral) {
@@ -599,117 +602,175 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
 
   if (nodeType == AltaNodeType::FunctionDefinitionNode) {
     auto aFunc = dynamic_cast<AAST::FunctionDefinitionNode*>(node);
-    auto info = dynamic_cast<DH::FunctionDefinitionNode*>(_info);
+    auto funcInfo = dynamic_cast<DH::FunctionDefinitionNode*>(_info);
 
-    if (!info->function->isExport && !info->function->isMethod) {
-      for (auto& hoistedGeneric: info->function->publicHoistedGenerics) {
-        includeGeneric(hoistedGeneric);
-      }
-    }
+    auto detailLoop =  [&](DH::FunctionDefinitionNode* info) {
+      Ceetah::Builder sourceBuilderCache(nullptr);
+      bool isGeneric = false;
 
-    for (auto& hoistedGeneric: info->function->privateHoistedGenerics) {
-      includeGeneric(hoistedGeneric);
-    }
-
-    if (!info->function->isExport && !info->function->isMethod) {
-      for (auto& hoistedType: info->function->publicHoistedFunctionalTypes) {
-        defineFunctionalType(hoistedType);
-      }
-    }
-
-    for (auto& hoistedType: info->function->hoistedFunctionalTypes) {
-      defineFunctionalType(hoistedType);
-    }
-
-    auto mangledFuncName = mangleName(info->function.get());
-    std::vector<std::tuple<std::string, std::shared_ptr<CAST::Type>>> cParams;
-    if (info->function->isMethod) {
-      cParams.push_back(std::make_tuple("_Alta_self", transpileType(info->function->parentClassType.get())));
-    }
-    for (size_t i = 0; i < info->function->parameterVariables.size(); i++) {
-      auto& var = info->function->parameterVariables[i];
-      auto& param = aFunc->parameters[i];
-      auto& paramInfo = info->parameters[i];
-      auto type = (param->isVariable) ? paramInfo->type->type->point() : paramInfo->type->type;
-      auto mangled = mangleName(var.get());
-      if (param->isVariable) {
-        mangled = mangled.substr(12);
-      }
-      cParams.push_back({ (param->isVariable ? "_Alta_array_" : "") + mangled, transpileType(type.get()) });
-      if (param->isVariable) {
-        cParams.push_back({ "_Alta_array_length_" + mangled, size_tType });
-      }
-    }
-    auto returnType = transpileType(info->function->returnType.get());
-
-    source.insertFunctionDefinition(mangledFuncName, cParams, returnType);
-    bool isMain = false;
-    if (info->function->isLiteral && info->function->name == "main") {
-      isMain = true;
-    }
-    if (isMain) {
-      source.insertExpressionStatement(
-        source.createFunctionCall(source.createFetch("_Alta_init_global_runtime"), {})
-      );
-      source.insertExpressionStatement(
-        source.createFunctionCall(source.createFetch("atexit"), {
-          // the cast is necessary to shut up a useless compiler warning
-          //
-          // ... because apparently C compilers think that void() != void(void)
-          source.createCast(
-            source.createFetch("_Alta_unwind_global_runtime"),
-            source.createType(source.createType("void"), { source.createType("void") }, std::vector<uint8_t> {})
-          )
-        })
-      );
-    }
-
-    stackBookkeepingStart(info->function->scope);
-
-    for (size_t i = 0; i < info->function->parameterVariables.size(); i++) {
-      auto& var = info->function->parameterVariables[i];
-      if (!var->type->isNative && var->type->indirectionLevel() < 1) {
-        source.insertExpressionStatement(source.createFunctionCall(
-          source.createFetch("_Alta_object_stack_push"),
-          {
-            source.createPointer(
-              source.createAccessor(
-                source.createFetch("_Alta_global_runtime"),
-                "local"
-              )
-            ),
-            source.createCast(
-              source.createPointer(
-                source.createFetch(mangleName(var.get()))
-              ),
-              source.createType("_Alta_basic_class", { { CAST::TypeModifierFlag::Pointer } })
-            ),
-          }
-        ));
-      }
-    }
-
-    for (size_t i = 0; i < aFunc->body->statements.size(); i++) {
-      auto& stmt = aFunc->body->statements[i];
-      auto& stmtInfo = info->body->statements[i];
-      transpile(stmt.get(), stmtInfo.get());
-    }
-
-    stackBookkeepingStop(info->function->scope);
-    source.exitInsertionPoint();
-
-    if (info->function->isExport || info->function->isMethod) {
-      for (auto& hoistedGeneric: info->function->publicHoistedGenerics) {
-        includeGeneric(hoistedGeneric, true);
-      }
-      for (auto& hoistedType: info->function->publicHoistedFunctionalTypes) {
-        defineFunctionalType(hoistedType, true);
-      }
       auto mod = AltaCore::Util::getModule(info->function->parentScope.lock().get()).lock();
       auto mangledModName = mangleName(mod.get());
-      headerPredeclaration("_ALTA_FUNCTION_" + mangledFuncName, mangledModName);
-      header.insertFunctionDeclaration(mangledFuncName, cParams, returnType);
-      header.exitInsertionPoint();
+
+      if (info->function->genericArguments.size() > 0) {
+        auto root = std::make_shared<CAST::RootNode>();
+        generics.push_back(std::make_pair(info->function, root));
+        sourceBuilderCache = source;
+        source = Ceetah::Builder(root);
+        isGeneric = true;
+      }
+
+      if (!info->function->isExport && !info->function->isMethod) {
+        for (auto& hoistedGeneric: info->function->publicHoistedGenerics) {
+          includeGeneric(hoistedGeneric);
+        }
+      }
+
+      for (auto& hoistedGeneric: info->function->privateHoistedGenerics) {
+        includeGeneric(hoistedGeneric);
+      }
+
+      if (!info->function->isExport && !info->function->isMethod) {
+        for (auto& hoistedType: info->function->publicHoistedFunctionalTypes) {
+          defineFunctionalType(hoistedType);
+        }
+      }
+
+      for (auto& hoistedType: info->function->hoistedFunctionalTypes) {
+        defineFunctionalType(hoistedType);
+      }
+
+      auto mangledFuncName = mangleName(info->function.get());
+      std::vector<std::tuple<std::string, std::shared_ptr<CAST::Type>>> cParams;
+      if (info->function->isMethod) {
+        cParams.push_back(std::make_tuple("_Alta_self", transpileType(info->function->parentClassType.get())));
+      }
+      for (size_t i = 0; i < info->function->parameterVariables.size(); i++) {
+        auto& var = info->function->parameterVariables[i];
+        auto& param = aFunc->parameters[i];
+        auto& paramInfo = info->parameters[i];
+        auto type = (param->isVariable) ? paramInfo->type->type->point() : paramInfo->type->type;
+        auto mangled = mangleName(var.get());
+        if (param->isVariable) {
+          mangled = mangled.substr(12);
+        }
+        cParams.push_back({ (param->isVariable ? "_Alta_array_" : "") + mangled, transpileType(type.get()) });
+        if (param->isVariable) {
+          cParams.push_back({ "_Alta_array_length_" + mangled, size_tType });
+        }
+      }
+      auto returnType = transpileType(info->function->returnType.get());
+
+      source.insertFunctionDefinition(mangledFuncName, cParams, returnType);
+      bool isMain = false;
+      if (info->function->isLiteral && info->function->name == "main") {
+        isMain = true;
+      }
+      if (isMain) {
+        source.insertExpressionStatement(
+          source.createFunctionCall(source.createFetch("_Alta_init_global_runtime"), {})
+        );
+        source.insertExpressionStatement(
+          source.createFunctionCall(source.createFetch("atexit"), {
+            // the cast is necessary to shut up a useless compiler warning
+            //
+            // ... because apparently C compilers think that void() != void(void)
+            source.createCast(
+              source.createFetch("_Alta_unwind_global_runtime"),
+              source.createType(source.createType("void"), { source.createType("void") }, std::vector<uint8_t> {})
+            )
+          })
+        );
+      }
+
+      stackBookkeepingStart(info->function->scope);
+
+      for (size_t i = 0; i < info->function->parameterVariables.size(); i++) {
+        auto& var = info->function->parameterVariables[i];
+        if (!var->type->isNative && var->type->indirectionLevel() < 1) {
+          source.insertExpressionStatement(source.createFunctionCall(
+            source.createFetch("_Alta_object_stack_push"),
+            {
+              source.createPointer(
+                source.createAccessor(
+                  source.createFetch("_Alta_global_runtime"),
+                  "local"
+                )
+              ),
+              source.createCast(
+                source.createPointer(
+                  source.createFetch(mangleName(var.get()))
+                ),
+                source.createType("_Alta_basic_class", { { CAST::TypeModifierFlag::Pointer } })
+              ),
+            }
+          ));
+        }
+      }
+
+      for (size_t i = 0; i < aFunc->body->statements.size(); i++) {
+        auto& stmt = aFunc->body->statements[i];
+        auto& stmtInfo = info->body->statements[i];
+        transpile(stmt.get(), stmtInfo.get());
+      }
+
+      stackBookkeepingStop(info->function->scope);
+      source.exitInsertionPoint();
+
+
+      if (isGeneric && !(info->function->isExport || info->function->isMethod)) {
+        auto tmp = source;
+        source = sourceBuilderCache;
+        for (auto& hoistedGeneric: info->function->publicHoistedGenerics) {
+          includeGeneric(hoistedGeneric);
+        }
+        for (auto& hoistedType: info->function->publicHoistedFunctionalTypes) {
+          defineFunctionalType(hoistedType);
+        }
+        auto mod = AltaCore::Util::getModule(info->function->parentScope.lock().get()).lock();
+        auto mangledModName = mangleName(mod.get());
+        source.insertFunctionDeclaration(mangledFuncName, cParams, returnType);
+        source = tmp;
+      }
+
+      if (info->function->isExport || info->function->isMethod) {
+        for (auto& hoistedGeneric: info->function->publicHoistedGenerics) {
+          includeGeneric(hoistedGeneric, true);
+        }
+        for (auto& hoistedType: info->function->publicHoistedFunctionalTypes) {
+          defineFunctionalType(hoistedType, true);
+        }
+        auto mod = AltaCore::Util::getModule(info->function->parentScope.lock().get()).lock();
+        auto mangledModName = mangleName(mod.get());
+        headerPredeclaration("_ALTA_FUNCTION_" + mangledFuncName, mangledModName);
+        header.insertFunctionDeclaration(mangledFuncName, cParams, returnType);
+      }
+
+      auto target = (info->function->isExport || info->function->isMethod) ? header : source;
+
+      for (auto arg: info->function->genericArguments) {
+        if (arg->klass) {
+          auto dependency = AltaCore::Util::getModule(arg->klass->parentScope.lock().get()).lock();
+          auto mangledImportName = mangleName(dependency.get());
+          target.insertPreprocessorDefinition(headerMangle(arg->klass.get()));
+          target.insertPreprocessorInclusion("_ALTA_MODULE_" + mangledModName + "_0_INCLUDE_" + mangledImportName, CAST::InclusionType::Computed);
+        }
+      }
+
+      if (info->function->isExport || info->function->isMethod) {
+        header.exitInsertionPoint();
+      }
+
+      if (isGeneric) {
+        source = sourceBuilderCache;
+      }
+    };
+
+    if (aFunc->generics.size() > 0) {
+      for (auto& inst: funcInfo->genericInstantiations) {
+        detailLoop(inst.get());
+      }
+    } else {
+      detailLoop(funcInfo);
     }
   } else if (nodeType == AltaNodeType::ExpressionStatement) {
     auto exprStmt = dynamic_cast<AAST::ExpressionStatement*>(node);
