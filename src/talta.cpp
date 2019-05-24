@@ -620,17 +620,122 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::doChildRetrieval(st
       parentAccessors.pop_back();
       idxs.pop();
     }
-    result = source.createPointer(result);
     for (size_t i = parentAccessors.size() - 1; i > 0; i--) {
       auto& curr = parentAccessors[i];
       auto& parent = parentAccessors[i - 1];
-      result = source.createFunctionCall(source.createFetch("_ALTA_GET_PARENT_STRUCT_PTR"), {
-        result,
-        source.createFetch(mangleName(parent.get())),
-        source.createFetch(mangleName(curr.get())),
-      }, true);
+
+      auto id = tempVarIDs[currentScope->id]++;
+      auto tmpName = mangleName(currentScope.get()) + "_temp_var_" + std::to_string(id);
+      auto tmpType = std::make_shared<AltaCore::DET::Type>(exprType->klass, std::vector<uint8_t> { (uint8_t)AltaCore::AST::TypeModifierFlag::Reference });
+      source.insertVariableDefinition(transpileType(tmpType.get()), tmpName, source.createPointer(result));
+      result = source.createDereference(source.createFetch(tmpName));
+
+      source.insertWhileLoop(
+        source.createBinaryOperation(
+          Ceetah::AST::OperatorType::NotEqualTo,
+          source.createFetch(tmpName),
+          source.createFetch("NULL")
+        )
+      );
+      source.insertBlock();
+
+      source.insertConditionalStatement(
+        source.createBinaryOperation(
+          Ceetah::AST::OperatorType::EqualTo,
+          source.createFunctionCall(
+            source.createFetch("strcmp"),
+            {
+              source.createAccessor(
+                source.createAccessor(
+                  source.createDereference(
+                    source.createFetch(tmpName)
+                  ),
+                  "_Alta_class_info_struct"
+                ),
+                "parentTypeName"
+              ),
+              source.createStringLiteral(mangleName(parent.get())),
+            }
+          ),
+          source.createIntegerLiteral("0")
+        )
+      );
+      result = source.createDereference(
+        source.createTernaryOperation(
+          source.createBinaryOperation(
+            Ceetah::AST::OperatorType::EqualTo,
+            source.createFetch(tmpName),
+            source.createFetch("NULL")
+          ),
+          source.createFetch("NULL"),
+          source.createFunctionCall(
+            source.createFetch("_ALTA_GET_PARENT_STRUCT_PTR"),
+            {
+              source.createFetch(tmpName),
+              source.createFetch(mangleName(parent.get())),
+              source.createFetch(mangleName(curr.get())),
+            },
+            true
+          )
+        )
+      );
+      source.insertExpressionStatement(source.createIntegerLiteral("break"));
+      source.exitInsertionPoint();
+
+      source.insertConditionalStatement(
+        source.createBinaryOperation(
+          Ceetah::AST::OperatorType::EqualTo,
+          source.createAccessor(
+            source.createAccessor(
+              source.createDereference(
+                source.createFetch(tmpName)
+              ),
+              "_Alta_class_info_struct"
+            ),
+            "nextOffset"
+          ),
+          source.createFetch("PTRDIFF_MAX")
+        )
+      );
+      source.insertBlock();
+      source.insertExpressionStatement(
+        source.createAssignment(
+          source.createFetch(tmpName),
+          source.createFetch("NULL")
+        )
+      );
+      source.insertExpressionStatement(source.createIntegerLiteral("break"));
+      source.exitInsertionPoint();
+      source.exitInsertionPoint();
+
+      source.insertExpressionStatement(
+        source.createAssignment(
+          source.createFetch(tmpName),
+          source.createCast(
+            source.createBinaryOperation(
+              Ceetah::AST::OperatorType::Addition,
+              source.createCast(
+                source.createFetch(tmpName),
+                source.createType("char", { { Ceetah::AST::TypeModifierFlag::Pointer } })
+              ),
+              source.createAccessor(
+                source.createAccessor(
+                  source.createDereference(
+                    source.createFetch(tmpName)
+                  ),
+                  "_Alta_class_info_struct"
+                ),
+                "nextOffset"
+              )
+            ),
+            transpileType(tmpType.get())
+          )
+        )
+      );
+
+      source.exitInsertionPoint();
+      source.exitInsertionPoint();
     }
-    result = source.createDereference(result);
     if (targetType->pointerLevel() > 0 && targetType->pointerLevel() < 2) {
       result = source.createPointer(result);
     } else if (targetType->pointerLevel() > 0) {
@@ -1259,9 +1364,15 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
       header.insertTypeDefinition(mangledClassName, header.createType("_s_" + mangledClassName, {}, true));
 
       auto self = header.createType(mangledClassName, { { CAST::TypeModifierFlag::Pointer } });
-      header.insertFunctionDeclaration("_init_" + mangledClassName, { std::make_tuple("_Alta_self", self) }, self);
+      header.insertFunctionDeclaration("_init_" + mangledClassName, {
+        std::make_tuple("_Alta_self", self),
+        std::make_tuple("_isSuper", source.createType("_Alta_bool", { { CAST::TypeModifierFlag::Constant } })),
+      }, self);
 
-      source.insertFunctionDefinition("_init_" + mangledClassName, { std::make_tuple("_Alta_self", self) }, self);
+      source.insertFunctionDefinition("_init_" + mangledClassName, {
+        std::make_tuple("_Alta_self", self),
+        std::make_tuple("_isSuper", source.createType("_Alta_bool", { { CAST::TypeModifierFlag::Constant } })),
+      }, self);
 
       auto infoStruct = source.createAccessor(source.createDereference(source.createFetch("_Alta_self")), "_Alta_class_info_struct");
 
@@ -1295,7 +1406,6 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
         )
       );
 
-      
       source.insertExpressionStatement(source.createAssignment(
         source.createAccessor(
           infoStruct,
@@ -1329,6 +1439,9 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
         )
       );
 
+      source.insertConditionalStatement(source.createUnaryOperation(CAST::UOperatorType::Not, source.createFetch("_isSuper")));
+      source.insertBlock();
+
       source.insertExpressionStatement(
         source.createAssignment(
           source.createAccessor(
@@ -1339,7 +1452,18 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
         )
       );
 
+      source.insertExpressionStatement(
+        source.createAssignment(
+          source.createAccessor(
+            infoStruct,
+            "nextOffset"
+          ),
+          source.createFetch("PTRDIFF_MAX")
+        )
+      );
+
       ALTACORE_MAP<std::string, std::shared_ptr<Ceetah::AST::Expression>> parentOffsets;
+      ALTACORE_MAP<std::string, std::pair<std::shared_ptr<Ceetah::AST::Expression>, std::shared_ptr<Ceetah::AST::Expression>>> recents;
       std::stack<size_t> indexes;
       std::stack<std::shared_ptr<AltaCore::DET::Class>> children;
       std::stack<std::shared_ptr<Ceetah::AST::Expression>> offsets;
@@ -1367,6 +1491,7 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
         auto mangledParentName = mangleName(parent.get());
 
         std::shared_ptr<CAST::Expression> tgt;
+        std::shared_ptr<CAST::Expression> tgt2;
         std::shared_ptr<CAST::Expression> offsetToPush = source.createFunctionCall(source.createFetch("offsetof"), {
           // not really an integer; just used for literal output
           source.createIntegerLiteral(
@@ -1412,12 +1537,71 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
           )
         );
 
+        if (recents.find(parent->id) != recents.end()) {
+          auto& [acc, off] = recents[parent->id];
+          source.insertExpressionStatement(
+            source.createAssignment(
+              source.createAccessor(
+                source.createAccessor(
+                  acc,
+                  "_Alta_class_info_struct"
+                ),
+                "nextOffset"
+              ),
+              source.createBinaryOperation(
+                CAST::OperatorType::Subtraction,
+                source.createBinaryOperation(
+                  CAST::OperatorType::Addition,
+                  childOffset,
+                  offsetToPush
+                ),
+                off
+              )
+            )
+          );
+        }
+
+        recents[parent->id] = std::make_pair(
+          std::dynamic_pointer_cast<CAST::Expression>(
+            source.createAccessor(
+              childAccessor,
+              mangledParentName
+            )
+          ),
+          std::dynamic_pointer_cast<CAST::Expression>(
+            source.createBinaryOperation(
+              CAST::OperatorType::Addition,
+              childOffset,
+              offsetToPush
+            )
+          )
+        );
+
+        source.insertExpressionStatement(
+          source.createAssignment(
+            source.createAccessor(
+              source.createAccessor(
+                source.createAccessor(
+                  childAccessor,
+                  mangledParentName
+                ),
+                "_Alta_class_info_struct"
+              ),
+              "nextOffset"
+            ),
+            source.createFetch("PTRDIFF_MAX")
+          )
+        );
+
         i++;
         indexes.push(0);
         children.push(parent);
         offsets.push(offsetToPush);
         accessors.push(source.createAccessor(childAccessor, mangledParentName));
       }
+
+      source.exitInsertionPoint();
+      source.exitInsertionPoint();
 
       enum class LoopKind {
         Members,
@@ -1704,7 +1888,7 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
         )
       );
       if (!info->isDefaultCopyConstructor) {
-        source.insertExpressionStatement(source.createFunctionCall(source.createFetch("_init_" + mangledClassName), { source.createFetch("_Alta_self") }));
+        source.insertExpressionStatement(source.createFunctionCall(source.createFetch("_init_" + mangledClassName), { source.createFetch("_Alta_self"), source.createFetch("_Alta_bool_false") }));
       }
       std::vector<std::shared_ptr<CAST::Expression>> pArgs = { source.createFetch("_Alta_self") };
       pArgs.insert(pArgs.end(), args.begin(), args.end());
@@ -1716,7 +1900,7 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
       source.insertFunctionDefinition("_cn_" + mangledName, params, ret);
       source.insertVariableDefinition(ret, "_Alta_self", source.createArrayLiteral({ source.createIntegerLiteral(0) }));
       if (!info->isDefaultCopyConstructor) {
-        source.insertExpressionStatement(source.createFunctionCall(source.createFetch("_init_" + mangledClassName), { source.createPointer(source.createFetch("_Alta_self")) }));
+        source.insertExpressionStatement(source.createFunctionCall(source.createFetch("_init_" + mangledClassName), { source.createPointer(source.createFetch("_Alta_self")), source.createFetch("_Alta_bool_false") }));
       }
       std::vector<std::shared_ptr<CAST::Expression>> nArgs = { source.createPointer(source.createFetch("_Alta_self")) };
       nArgs.insert(nArgs.end(), args.begin(), args.end());
@@ -1740,15 +1924,42 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
         mangledClass
       );
       auto parentInfo = source.createAccessor(myParent, "_Alta_class_info_struct");
-      source.insertExpressionStatement(
-        source.createAssignment(
-          myParent,
-          source.createFunctionCall(
-            source.createFetch("_cn_" + mangledCtor),
-            args
-          )
+      auto mangledParentName = mangleName(info->klass.get());
+
+      source.insertConditionalStatement(
+        source.createBinaryOperation(
+          CAST::OperatorType::EqualTo,
+          source.createAccessor(
+            parentInfo,
+            "realOffset"
+          ),
+          source.createFetch("PTRDIFF_MAX")
         )
       );
+      source.insertBlock();
+
+      source.insertExpressionStatement(
+        source.createFunctionCall(
+          source.createFetch("_init_" + mangledParentName),
+          {
+            source.createPointer(myParent),
+            source.createFetch("_Alta_bool_true"),
+          }
+        )
+      );
+
+      args.insert(args.begin(), source.createPointer(myParent));
+
+      source.insertExpressionStatement(
+        source.createFunctionCall(
+          source.createFetch("_c_" + mangledCtor),
+          args
+        )
+      );
+
+      source.exitInsertionPoint();
+      source.exitInsertionPoint();
+
       source.insertExpressionStatement(source.createAssignment(
         source.createAccessor(
           parentInfo,
