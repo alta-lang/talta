@@ -1803,38 +1803,85 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     }
 
     if (info->isDefaultCopyConstructor) {
+      auto id = tempVarIDs[info->method->scope->id]++;
+      auto tmpName = mangleName(info->method->scope.get()) + "_temp_var_" + std::to_string(id);
       auto self = source.createDereference(source.createFetch("_Alta_self"));
-      auto other = source.createDereference(source.createFetch(mangleName(constr->parameterVariables[0].get())));
-      source.insertExpressionStatement(source.createAssignment(
-        self,
-        other
-      ));
       auto selfInfo = source.createAccessor(self, "_Alta_class_info_struct");
-      source.insertExpressionStatement(source.createAssignment(
-        source.createAccessor(
+      source.insertVariableDefinition(
+        source.createType("_Alta_class_info"),
+        tmpName,
+        selfInfo
+      );
+      auto other = source.createDereference(source.createFetch(mangleName(constr->parameterVariables[0].get())));
+      source.insertExpressionStatement(
+        source.createAssignment(
+          self,
+          other
+        )
+      );
+      source.insertExpressionStatement(
+        source.createAssignment(
           selfInfo,
-          "isBaseStruct"
-        ),
-        source.createFetch("_Alta_bool_true")
-      ));
-      source.insertExpressionStatement(source.createAssignment(
-        source.createAccessor(
-          selfInfo,
-          "parentTypeName"
-        ),
-        source.createStringLiteral("")
-      ));
+          source.createFetch(tmpName)
+        )
+      );
       for (auto& parent: info->klass->parents) {
         if (parent->copyConstructor) {
           auto name = mangleName(parent.get());
-          auto myParent = source.createAccessor(self, name);
+          std::shared_ptr<CAST::Expression> myParent = source.createAccessor(self, name);
+          std::shared_ptr<CAST::Expression> theirParent = source.createAccessor(other, name);
+          auto id = tempVarIDs[info->method->scope->id]++;
+          auto tmpName = mangleName(info->method->scope.get()) + "_temp_var_" + std::to_string(id);
+          auto altaType = std::make_shared<AltaCore::DET::Type>(parent)->reference();
+          source.insertVariableDefinition(
+            transpileType(altaType.get()),
+            tmpName,
+            source.createPointer(theirParent)
+          );
+          theirParent = source.createDereference(
+            source.createTernaryOperation(
+              source.createBinaryOperation(
+                Ceetah::AST::OperatorType::LessThan,
+                source.createAccessor(
+                  source.createAccessor(
+                    source.createDereference(
+                      source.createFetch(tmpName)
+                    ),
+                    "_Alta_class_info_struct"
+                  ),
+                  "realOffset"
+                ),
+                source.createFetch("PTRDIFF_MAX")
+              ),
+              source.createCast(
+                source.createBinaryOperation(
+                  Ceetah::AST::OperatorType::Subtraction,
+                  source.createCast(
+                    source.createFetch(tmpName),
+                    source.createType("char", std::vector<uint8_t> { (uint8_t)Ceetah::AST::TypeModifierFlag::Pointer })
+                  ),
+                  source.createAccessor(
+                    source.createAccessor(
+                      source.createDereference(
+                        source.createFetch(tmpName)
+                      ),
+                      "_Alta_class_info_struct"
+                    ),
+                    "realOffset"
+                  )
+                ),
+                transpileType(altaType.get())
+              ),
+              source.createFetch(tmpName)
+            )
+          );
           auto parentInfo = source.createAccessor(myParent, "_Alta_class_info_struct");
           source.insertExpressionStatement(source.createAssignment(
-            myParent,
+            source.createAccessor(self, name),
             source.createFunctionCall(
               source.createFetch("_cn_" + mangleName(parent->copyConstructor.get())),
               {
-                source.createPointer(source.createAccessor(other, name))
+                source.createPointer(theirParent),
               }
             )
           ));
@@ -1951,9 +1998,9 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
           source.createFetch("_Alta_bool_true")
         )
       );
-      if (!info->isDefaultCopyConstructor) {
+      //if (!info->isDefaultCopyConstructor) {
         source.insertExpressionStatement(source.createFunctionCall(source.createFetch("_init_" + mangledClassName), { source.createFetch("_Alta_self"), source.createFetch("_Alta_bool_false") }));
-      }
+      //}
       std::vector<std::shared_ptr<CAST::Expression>> pArgs = { source.createFetch("_Alta_self") };
       pArgs.insert(pArgs.end(), args.begin(), args.end());
       source.insertExpressionStatement(source.createFunctionCall(source.createFetch("_c_" + mangledName), pArgs));
@@ -1963,9 +2010,9 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
       header.insertFunctionDeclaration("_cn_" + mangledName, params, ret);
       source.insertFunctionDefinition("_cn_" + mangledName, params, ret);
       source.insertVariableDefinition(ret, "_Alta_self", source.createArrayLiteral({ source.createIntegerLiteral(0) }));
-      if (!info->isDefaultCopyConstructor) {
+      //if (!info->isDefaultCopyConstructor) {
         source.insertExpressionStatement(source.createFunctionCall(source.createFetch("_init_" + mangledClassName), { source.createPointer(source.createFetch("_Alta_self")), source.createFetch("_Alta_bool_false") }));
-      }
+      //}
       std::vector<std::shared_ptr<CAST::Expression>> nArgs = { source.createPointer(source.createFetch("_Alta_self")) };
       nArgs.insert(nArgs.end(), args.begin(), args.end());
       source.insertExpressionStatement(source.createFunctionCall(source.createFetch("_c_" + mangledName), nArgs));
