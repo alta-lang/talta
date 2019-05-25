@@ -1071,6 +1071,51 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
           for (auto& parent: parents) {
             tgt = source.createAccessor(tgt, mangleName(parent.get()));
           }
+          auto id = tempVarIDs[currentScope->id]++;
+          auto tmpName = mangleName(currentScope.get()) + "_temp_var_" + std::to_string(id);
+          auto altaType = std::make_shared<AltaCore::DET::Type>(parents.back())->reference();
+          source.insertVariableDefinition(
+            transpileType(altaType.get()),
+            tmpName,
+            source.createPointer(tgt)
+          );
+          tgt = source.createDereference(
+            source.createTernaryOperation(
+              source.createBinaryOperation(
+                Ceetah::AST::OperatorType::LessThan,
+                source.createAccessor(
+                  source.createAccessor(
+                    source.createDereference(
+                      source.createFetch(tmpName)
+                    ),
+                    "_Alta_class_info_struct"
+                  ),
+                  "realOffset"
+                ),
+                source.createFetch("PTRDIFF_MAX")
+              ),
+              source.createCast(
+                source.createBinaryOperation(
+                  Ceetah::AST::OperatorType::Subtraction,
+                  source.createCast(
+                    source.createFetch(tmpName),
+                    source.createType("char", std::vector<uint8_t> { (uint8_t)Ceetah::AST::TypeModifierFlag::Pointer })
+                  ),
+                  source.createAccessor(
+                    source.createAccessor(
+                      source.createDereference(
+                        source.createFetch(tmpName)
+                      ),
+                      "_Alta_class_info_struct"
+                    ),
+                    "realOffset"
+                  )
+                ),
+                transpileType(altaType.get())
+              ),
+              source.createFetch(tmpName)
+            )
+          );
         }
         result = source.createAccessor(tgt, mangleName(info->narrowedTo.get()));
       }
@@ -1089,6 +1134,51 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
           for (auto& parent: parents) {
             self = source.createAccessor(self, mangleName(parent.get()));
           }
+          auto id = tempVarIDs[currentScope->id]++;
+          auto tmpName = mangleName(currentScope.get()) + "_temp_var_" + std::to_string(id);
+          auto altaType = std::make_shared<AltaCore::DET::Type>(parents.back())->reference();
+          source.insertVariableDefinition(
+            transpileType(altaType.get()),
+            tmpName,
+            source.createPointer(self)
+          );
+          self = source.createDereference(
+            source.createTernaryOperation(
+              source.createBinaryOperation(
+                Ceetah::AST::OperatorType::LessThan,
+                source.createAccessor(
+                  source.createAccessor(
+                    source.createDereference(
+                      source.createFetch(tmpName)
+                    ),
+                    "_Alta_class_info_struct"
+                  ),
+                  "realOffset"
+                ),
+                source.createFetch("PTRDIFF_MAX")
+              ),
+              source.createCast(
+                source.createBinaryOperation(
+                  Ceetah::AST::OperatorType::Subtraction,
+                  source.createCast(
+                    source.createFetch(tmpName),
+                    source.createType("char", std::vector<uint8_t> { (uint8_t)Ceetah::AST::TypeModifierFlag::Pointer })
+                  ),
+                  source.createAccessor(
+                    source.createAccessor(
+                      source.createDereference(
+                        source.createFetch(tmpName)
+                      ),
+                      "_Alta_class_info_struct"
+                    ),
+                    "realOffset"
+                  )
+                ),
+                transpileType(altaType.get())
+              ),
+              source.createFetch(tmpName)
+            )
+          );
         }
         /*
         auto selfType = AltaCore::DET::Type::getUnderlyingType(selfAlta);
@@ -1213,41 +1303,15 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
       for (size_t i = 0; i < selfType->pointerLevel(); i++) {
         self = source.createDereference(self);
       }
-      args.push_back(source.createPointer(self));
+      bool didRetrieval = false;
+      auto exprType = std::make_shared<AltaCore::DET::Type>(selfType->klass);
+      auto targetType = std::make_shared<AltaCore::DET::Type>(info->targetType->methodParent);
+      self = doParentRetrieval(self, exprType, targetType, &didRetrieval);
+      self = source.createPointer(self);
+      args.push_back(self);
     }
     auto restArgs = processArgs(info->adjustedArguments, info->targetType->parameters);
     args.insert(args.end(), restArgs.begin(), restArgs.end());
-    /*
-    for (size_t i = 0; i < info->adjustedArguments.size(); i++) {
-      auto& arg = info->adjustedArguments[i];
-      if (auto solo = ALTACORE_VARIANT_GET_IF<std::pair<std::shared_ptr<AAST::ExpressionNode>, std::shared_ptr<DH::ExpressionNode>>>(&arg)) {
-        auto& [soloArg, soloInfo] = *solo;
-        auto [name, targetType, isVariable, id] = info->targetType->parameters[i];
-        auto argType = AltaCore::DET::Type::getUnderlyingType(soloInfo.get());
-        auto target = transpile(soloArg.get(), soloInfo.get());
-        for (size_t j = 0; j < targetType->referenceLevel(); j++) {
-          target = source.createPointer(target);
-        }
-        args.push_back(target);
-      } else if (auto multi = ALTACORE_VARIANT_GET_IF<std::vector<std::pair<std::shared_ptr<AAST::ExpressionNode>, std::shared_ptr<DH::ExpressionNode>>>>(&arg)) {
-        auto [name, targetType, isVariable, id] = info->targetType->parameters[i];
-        if (varargTable[id]) {
-          for (auto& [arg, info]: *multi) {
-            args.push_back(transpile(arg.get(), info.get()));
-          }
-        } else {
-          std::vector<std::shared_ptr<CAST::Expression>> arrItems;
-          for (auto& [arg, info]: *multi) {
-            arrItems.push_back(transpile(arg.get(), info.get()));
-          }
-          auto cType = transpileType(targetType.get());
-          cType->arraySize = SIZE_MAX;
-          args.push_back(source.createArrayLiteral(arrItems, cType));
-          args.push_back(source.createIntegerLiteral((*multi).size()));
-        }
-      }
-    }
-    */
     std::shared_ptr<CAST::Expression> result = nullptr;
     auto refLevel = info->targetType->returnType->referenceLevel();
     if (info->isMethodCall) {
