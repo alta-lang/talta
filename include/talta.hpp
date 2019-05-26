@@ -41,6 +41,7 @@ namespace Talta {
       std::shared_ptr<Ceetah::AST::RootNode> cRoot = nullptr;
       std::shared_ptr<Ceetah::AST::RootNode> hRoot = nullptr;
       std::shared_ptr<AltaCore::DET::Module> currentModule = nullptr;
+      std::shared_ptr<AltaCore::DET::Scope> currentScope = nullptr;
       Ceetah::Builder source = Ceetah::Builder(cRoot);
       Ceetah::Builder header = Ceetah::Builder(hRoot);
       std::vector<std::pair<std::shared_ptr<AltaCore::DET::ScopeItem>, std::shared_ptr<Ceetah::AST::RootNode>>> generics;
