@@ -610,6 +610,7 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::doChildRetrieval(st
           break;
         } else if (parent->parents.size() > 0) {
           cont = true;
+          idxs.push(0);
           break;
         } else {
           parentAccessors.pop_back();
@@ -619,6 +620,9 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::doChildRetrieval(st
       if (cont) continue;
       parentAccessors.pop_back();
       idxs.pop();
+      if (idxs.size() > 0) {
+        ++idxs.top();
+      }
     }
     for (size_t i = parentAccessors.size() - 1; i > 0; i--) {
       auto& curr = parentAccessors[i];
@@ -2197,6 +2201,7 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
       return source.createFetch("_Alta_bool_true");
     } else if (testType->klass->hasParent(targetType->klass)) {
       auto tgt = transpile(instOf->target.get(), info->target.get());
+      /*
       std::deque<std::shared_ptr<AltaCore::DET::Class>> parentAccessors;
       std::stack<size_t> idxs;
       parentAccessors.push_back(testType->klass);
@@ -2325,6 +2330,15 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
           result
         ),
       });
+      */
+      auto tgtType = AltaCore::DET::Type::getUnderlyingType(info->target.get());
+      bool didRetrieval = false;
+      auto result = doChildRetrieval(tgt, tgtType, info->type->type, &didRetrieval);
+      return source.createBinaryOperation(
+        CAST::OperatorType::NotEqualTo,
+        source.createPointer(result),
+        source.createFetch("NULL")
+      );
     } else {
       return source.createFetch("_Alta_bool_false");
     }
