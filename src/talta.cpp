@@ -350,6 +350,7 @@ void Talta::CTranspiler::headerPredeclaration(std::string def, std::string mangl
   header.insertPreprocessorConditional("(defined(" + def + ")" + (includeAll ? (" || defined(_ALTA_MODULE_ALL_" + mangledModName + ')') : "") + ") && !defined(_DEFINED_" + def + ')');
   header.insertPreprocessorUndefinition(def);
   header.insertPreprocessorDefinition("_DEFINED_" + def);
+  insertExportDefinition(def);
 };
 
 void Talta::CTranspiler::defineFunctionalType(std::shared_ptr<AltaCore::DET::Type> type, bool inHeader) {
@@ -382,7 +383,12 @@ void Talta::CTranspiler::includeGeneric(std::shared_ptr<AltaCore::DET::ScopeItem
   auto mangledParentName = mangleName(currentModule.get());
 
   target.insertPreprocessorDefinition(headerMangle(generic.get()));
+
+  saveExportDefinitions(inHeader);
+
   target.insertPreprocessorInclusion("_ALTA_MODULE_" + mangledParentName + "_0_INCLUDE_" + mangledImportName, Ceetah::AST::InclusionType::Computed);
+
+  restoreExportDefinitions(inHeader);
 };
 
 void Talta::CTranspiler::stackBookkeepingStart(std::shared_ptr<AltaCore::DET::Scope> scope) {
@@ -750,6 +756,36 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::doChildRetrieval(st
     }
   }
   return result;
+};
+
+void Talta::CTranspiler::insertExportDefinition(std::string def) {
+  auto modName = mangleName(currentModule.get());
+
+  definitions.insertPreprocessorConditional("defined(_ALTA_SAVE_DEFS_" + modName + ") && defined(" + def + ")");
+  definitions.insertPreprocessorDefinition("_ALTA_DEF_" + def);
+  definitions.insertPreprocessorUndefinition(def);
+  definitions.exitInsertionPoint();
+
+  definitions.insertPreprocessorConditional("!defined(_ALTA_SAVE_DEFS_" + modName + ") && defined(_ALTA_DEF_" + def + ")");
+  definitions.insertPreprocessorDefinition(def);
+  definitions.insertPreprocessorUndefinition("_ALTA_DEF_" + def);
+  definitions.exitInsertionPoint();
+};
+
+void Talta::CTranspiler::saveExportDefinitions(bool inHeader) {
+  auto modName = mangleName(currentModule.get());
+  Ceetah::Builder& target = inHeader ? header : source;
+
+  target.insertPreprocessorDefinition("_ALTA_SAVE_DEFS_" + modName);
+  target.insertPreprocessorInclusion("_ALTA_DEF_HEADER_" + modName, Ceetah::AST::InclusionType::Computed);
+  target.insertPreprocessorUndefinition("_ALTA_SAVE_DEFS_" + modName);
+};
+
+void Talta::CTranspiler::restoreExportDefinitions(bool inHeader) {
+  auto modName = mangleName(currentModule.get());
+  Ceetah::Builder& target = inHeader ? header : source;
+
+  target.insertPreprocessorInclusion("_ALTA_DEF_HEADER_" + modName, Ceetah::AST::InclusionType::Computed);
 };
 
 std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore::AST::Node* node, AltaCore::DH::Node* _info) {
@@ -1242,8 +1278,9 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     if (!tgtType->isNative && tgtType->pointerLevel() < 1 && tgtType->klass->destructor) {
       auto id = tempVarIDs[info->inputScope->id]++;
       auto tmpName = mangleName(info->inputScope.get()) + "_temp_var_" + std::to_string(id);
+      tgtType = tgtType->destroyReferences()->reference();
       source.insertVariableDefinition(
-        transpileType(tgtType->point().get()),
+        transpileType(tgtType.get()),
         tmpName,
         source.createPointer(tgt)
       );
@@ -2503,12 +2540,25 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
 void Talta::CTranspiler::transpile(std::shared_ptr<AltaCore::AST::RootNode> altaRoot) {
   cRoot = std::make_shared<Ceetah::AST::RootNode>();
   hRoot = std::make_shared<Ceetah::AST::RootNode>();
+  dRoot = std::make_shared<Ceetah::AST::RootNode>();
   source = Ceetah::Builder(cRoot);
   header = Ceetah::Builder(hRoot);
+  definitions = Ceetah::Builder(dRoot);
   generics.clear();
   currentModule = altaRoot->info->module;
 
   auto mangledModuleName = mangleName(currentModule.get());
+
+  definitions.insertPreprocessorConditional("defined(_ALTA_SAVE_DEFS_" + mangledModuleName + ") && defined(_ALTA_MODULE_ALL_" + mangledModuleName + ")");
+  definitions.insertPreprocessorDefinition("_AMA_WAS_DEFINED_" + mangledModuleName);
+  definitions.insertPreprocessorUndefinition("_ALTA_MODULE_ALL_" + mangledModuleName);
+  definitions.exitInsertionPoint();
+
+
+  definitions.insertPreprocessorConditional("!defined(_ALTA_SAVE_DEFS_" + mangledModuleName + ") && defined(_AMA_WAS_DEFINED_" + mangledModuleName + ")");
+  definitions.insertPreprocessorDefinition("_ALTA_MODULE_ALL_" + mangledModuleName);
+  definitions.insertPreprocessorUndefinition("_ALTA_SAVE_DEFS_" + mangledModuleName);
+  definitions.exitInsertionPoint();
 
   header.insertPreprocessorInclusion("_ALTA_RUNTIME_COMMON_HEADER_" + mangledModuleName, Ceetah::AST::InclusionType::Computed);
 
@@ -2532,10 +2582,12 @@ void Talta::CTranspiler::transpile(std::shared_ptr<AltaCore::AST::RootNode> alta
   }
 
   header.insertPreprocessorUndefinition("_ALTA_MODULE_ALL_" + mangledModuleName);
+
+  definitions.insertPreprocessorUndefinition("_ALTA_SAVE_DEFS_" + mangledModuleName);
 };
 
-ALTACORE_MAP<std::string, std::tuple<std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<Ceetah::AST::RootNode>, std::vector<std::shared_ptr<Ceetah::AST::RootNode>>, std::vector<std::shared_ptr<AltaCore::DET::ScopeItem>>, std::shared_ptr<AltaCore::DET::Module>>> Talta::recursivelyTranspileToC(std::shared_ptr<AltaCore::AST::RootNode> altaRoot, CTranspiler* transpiler) {
-  ALTACORE_MAP<std::string, std::tuple<std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<Ceetah::AST::RootNode>, std::vector<std::shared_ptr<Ceetah::AST::RootNode>>, std::vector<std::shared_ptr<AltaCore::DET::ScopeItem>>, std::shared_ptr<AltaCore::DET::Module>>> results;
+ALTACORE_MAP<std::string, std::tuple<std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<Ceetah::AST::RootNode>, std::vector<std::shared_ptr<Ceetah::AST::RootNode>>, std::vector<std::shared_ptr<AltaCore::DET::ScopeItem>>, std::shared_ptr<AltaCore::DET::Module>>> Talta::recursivelyTranspileToC(std::shared_ptr<AltaCore::AST::RootNode> altaRoot, CTranspiler* transpiler) {
+  ALTACORE_MAP<std::string, std::tuple<std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<Ceetah::AST::RootNode>, std::vector<std::shared_ptr<Ceetah::AST::RootNode>>, std::vector<std::shared_ptr<AltaCore::DET::ScopeItem>>, std::shared_ptr<AltaCore::DET::Module>>> results;
 
   bool deleteIt = false;
   if (transpiler == nullptr) {
@@ -2550,7 +2602,7 @@ ALTACORE_MAP<std::string, std::tuple<std::shared_ptr<Ceetah::AST::RootNode>, std
     gRoots.push_back(generic.second);
     gItems.push_back(generic.first);
   }
-  results[altaRoot->info->module->name] = { transpiler->cRoot, transpiler->hRoot, gRoots, gItems, altaRoot->info->module };
+  results[altaRoot->info->module->name] = { transpiler->cRoot, transpiler->hRoot, transpiler->dRoot, gRoots, gItems, altaRoot->info->module };
   for (auto& dep: altaRoot->info->dependencyASTs) {
     auto other = recursivelyTranspileToC(dep, transpiler);
     for (auto& [name, item]: other) {
