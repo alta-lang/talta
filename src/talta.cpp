@@ -1398,14 +1398,20 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     for (size_t i = 0; i < cond->alternatives.size(); i++) {
       auto& [altTest, altResult] = cond->alternatives[i];
       auto& [testInfo, resultInfo] = info->alternatives[i];
-      source.enterConditionalAlternative(i);
-      source.insert(transpile(altTest.get(), testInfo.get()));
+      source.enterConditionalUltimatum();
+      source.insertBlock();
+      source.insertConditionalStatement(transpile(altTest.get(), testInfo.get()));
       transpile(altResult.get(), resultInfo.get());
     }
 
     if (cond->finalResult) {
       source.enterConditionalUltimatum();
       transpile(cond->finalResult.get(), info->finalResult.get());
+    }
+
+    for (size_t i = 0; i < cond->alternatives.size(); i++) {
+      source.exitInsertionPoint();
+      source.exitInsertionPoint();
     }
 
     source.exitInsertionPoint();
