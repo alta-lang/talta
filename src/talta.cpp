@@ -35,7 +35,7 @@ std::vector<std::shared_ptr<Ceetah::AST::Expression>> Talta::CTranspiler::proces
         bool didRetrieval = false;
         auto exprType = AltaCore::DET::Type::getUnderlyingType(info.get());
         auto val = doParentRetrieval(transpiled, exprType, targetType, &didRetrieval);
-        bool canCopy = targetType->referenceLevel() < 1;
+        bool canCopy = targetType->indirectionLevel() < 1;
         if (didRetrieval && canCopy) {
           val = doCopyCtor(val, targetType);
         } else if (canCopy) {
@@ -52,7 +52,7 @@ std::vector<std::shared_ptr<Ceetah::AST::Expression>> Talta::CTranspiler::proces
             bool didRetrieval = false;
             auto exprType = AltaCore::DET::Type::getUnderlyingType(info.get());
             auto val = doParentRetrieval(transpiled, exprType, targetType, &didRetrieval);
-            bool canCopy = targetType->referenceLevel() < 1;
+            bool canCopy = targetType->indirectionLevel() < 1;
             if (didRetrieval && canCopy) {
               val = doCopyCtor(val, targetType);
             } else if (canCopy) {
@@ -70,7 +70,7 @@ std::vector<std::shared_ptr<Ceetah::AST::Expression>> Talta::CTranspiler::proces
             bool didRetrieval = false;
             auto exprType = AltaCore::DET::Type::getUnderlyingType(info.get());
             auto val = doParentRetrieval(transpiled, exprType, targetType, &didRetrieval);
-            bool canCopy = targetType->referenceLevel() < 1;
+            bool canCopy = targetType->indirectionLevel() < 1;
             if (didRetrieval && canCopy) {
               val = doCopyCtor(val, targetType);
             } else if (canCopy) {
@@ -172,6 +172,7 @@ std::string Talta::escapeName(std::string name) {
    * `_6_` is reserved for version prerelease delimination
    * `_7_` is reserved for version build information delimination
    * `_8_` is reserved for variable function parameter type separation
+   * `_9_` is reserved for parameter name separation
    */
 
   for (size_t i = 0; i < name.size(); i++) {
@@ -263,7 +264,7 @@ std::string Talta::mangleName(AltaCore::DET::ScopeItem* item, bool fullName) {
     if (!isLiteral) {
       itemName = escapeName(itemName);
       for (auto& [name, type, isVariable, id]: func->parameters) {
-        itemName += ((isVariable) ? "_8_" : "_1_") + mangleType(type.get());
+        itemName += "_9_" + escapeName(name) + ((isVariable) ? "_8_" : "_1_") + mangleType(type.get());
       }
     }
   } else if (nodeType == NodeType::Variable) {
@@ -1004,6 +1005,14 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
       }
     }
 
+    std::string tmpName;
+
+    if (expr) {
+      auto id = tempVarIDs[currentScope->id]++;
+      tmpName = mangleName(currentScope.get()) + "_temp_var_" + std::to_string(id);
+      source.insertVariableDefinition(transpileType(info->functionReturnType.get()), tmpName, expr);
+    }
+
     std::shared_ptr<AltaCore::DET::Scope> target = info->inputScope;
     while (target) {
       stackBookkeepingStop(target);
@@ -1013,7 +1022,7 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
       target = target->parent.lock();
     }
 
-    source.insertReturnDirective(expr);
+    source.insertReturnDirective(expr ? source.createFetch(tmpName) : nullptr);
   } else if (nodeType == AltaNodeType::IntegerLiteralNode) {
     auto intLit = dynamic_cast<AAST::IntegerLiteralNode*>(node);
     return source.createIntegerLiteral(intLit->raw);
@@ -1031,7 +1040,7 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
 
       bool didRetrieval = false;
       auto val = doParentRetrieval(transpiled, exprType, info->variable->type, &didRetrieval);
-      bool canCopy = info->variable->type->referenceLevel() < 1;
+      bool canCopy = info->variable->type->indirectionLevel() < 1;
       if (didRetrieval && canCopy) {
         val = doCopyCtor(val, info->variable->type);
       } else if (canCopy) {
@@ -1169,6 +1178,12 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
         auto selfAlta = acc->target.get();
         auto selfInfo = info->target.get();
         auto self = transpile(selfAlta, selfInfo);
+        auto selfType = AltaCore::DET::Type::getUnderlyingType(selfInfo);
+        if (selfType->pointerLevel() > 0) {
+          for (size_t i = 0; i < selfType->pointerLevel(); i++) {
+            self = source.createDereference(self);
+          }
+        }
         if (info->parentClassAccessors.find(info->readAccessorIndex) != info->parentClassAccessors.end()) {
           auto& parents = info->parentClassAccessors[info->readAccessorIndex];
           for (auto& parent: parents) {
@@ -1275,7 +1290,10 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     auto info = dynamic_cast<DH::AssignmentExpression*>(_info);
     auto tgt = transpile(assign->target.get(), info->target.get());
     auto tgtType = AltaCore::DET::Type::getUnderlyingType(info->target.get());
-    if (!tgtType->isNative && tgtType->pointerLevel() < 1 && tgtType->klass->destructor) {
+    bool canCopy = tgtType->pointerLevel() < 1 && (!info->strict || tgtType->indirectionLevel() < 1);
+    bool canDestroy = !info->strict && !tgtType->isNative && tgtType->pointerLevel() < 1 && tgtType->klass->destructor;
+
+    if (canDestroy) {
       auto id = tempVarIDs[info->inputScope->id]++;
       auto tmpName = mangleName(info->inputScope.get()) + "_temp_var_" + std::to_string(id);
       tgtType = tgtType->destroyReferences()->reference();
@@ -1284,20 +1302,52 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
         tmpName,
         source.createPointer(tgt)
       );
-      id++;
-      source.insertExpressionStatement(source.createFunctionCall(source.createFetch("_d_" + mangleName(tgtType->klass->destructor.get())), {
-        source.createCast(source.createFetch(tmpName), source.createType("_Alta_basic_class", { { CAST::TypeModifierFlag::Pointer } })),
-      }));
       tgt = source.createDereference(source.createFetch(tmpName));
     }
+
     bool didRetrieval = false;
     auto expr = transpile(assign->value.get(), info->value.get());
     auto exprType = AltaCore::DET::Type::getUnderlyingType(info->value.get());
     auto val = doParentRetrieval(expr, exprType, tgtType, &didRetrieval);
-    if (didRetrieval) {
-      val = doCopyCtor(val, tgtType);
-    } else {
-      val = doCopyCtor(expr, assign->value, info->value);
+
+    if (canCopy) {
+      auto id = tempVarIDs[info->inputScope->id]++;
+      auto tmpName = mangleName(info->inputScope.get()) + "_temp_var_" + std::to_string(id);
+      if (didRetrieval) {
+        val = doCopyCtor(val, tgtType);
+      } else {
+        val = doCopyCtor(expr, assign->value, info->value);
+      }
+      source.insertVariableDefinition(
+        transpileType(exprType.get()),
+        tmpName,
+        val
+      );
+      val = source.createFetch(tmpName);
+    }
+
+    if (canDestroy) {
+      source.insertExpressionStatement(
+        source.createFunctionCall(
+          source.createFetch("_d_" + mangleName(tgtType->klass->destructor.get())),
+          {
+            source.createCast(
+              source.createPointer(tgt),
+              source.createType("_Alta_basic_class", { { CAST::TypeModifierFlag::Pointer } })
+            ),
+            source.createFetch("_Alta_bool_false"),
+          }
+        )
+      );
+    }
+
+    if (info->strict) {
+      for (size_t i = 0; i < tgtType->referenceLevel(); i++) {
+        tgt = source.createPointer(tgt);
+      }
+      for (size_t i = 0; i < tgtType->referenceLevel(); i++) {
+        val = source.createPointer(val);
+      }
     }
 
     return source.createAssignment(tgt, val, (CAST::AssignmentType)info->type);
@@ -1393,7 +1443,16 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     auto info = dynamic_cast<DH::ConditionalStatement*>(_info);
 
     source.insertConditionalStatement(transpile(cond->primaryTest.get(), info->primaryTest.get()));
+    bool doBlock = cond->primaryResult->nodeType() != AltaNodeType::BlockNode;
+    if (doBlock) {
+      source.insertBlock();
+      stackBookkeepingStart(info->primaryScope);
+    }
     transpile(cond->primaryResult.get(), info->primaryResult.get());
+    if (doBlock) {
+      stackBookkeepingStop(info->primaryScope);
+      source.exitInsertionPoint();
+    }
 
     for (size_t i = 0; i < cond->alternatives.size(); i++) {
       auto& [altTest, altResult] = cond->alternatives[i];
@@ -1401,12 +1460,30 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
       source.enterConditionalUltimatum();
       source.insertBlock();
       source.insertConditionalStatement(transpile(altTest.get(), testInfo.get()));
+      bool doBlock = altResult->nodeType() != AltaNodeType::BlockNode;
+      if (doBlock) {
+        source.insertBlock();
+        stackBookkeepingStart(info->alternativeScopes[i]);
+      }
       transpile(altResult.get(), resultInfo.get());
+      if (doBlock) {
+        stackBookkeepingStop(info->alternativeScopes[i]);
+        source.exitInsertionPoint();
+      }
     }
 
     if (cond->finalResult) {
       source.enterConditionalUltimatum();
+      bool doBlock = cond->finalResult->nodeType() != AltaNodeType::BlockNode;
+      if (doBlock) {
+        source.insertBlock();
+        stackBookkeepingStart(info->finalScope);
+      }
       transpile(cond->finalResult.get(), info->finalResult.get());
+      if (doBlock) {
+        stackBookkeepingStop(info->finalScope);
+        source.exitInsertionPoint();
+      }
     }
 
     for (size_t i = 0; i < cond->alternatives.size(); i++) {
@@ -1815,6 +1892,7 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
       retType = voidType;
 
       fullParams.push_back({ "__Alta_self", header.createType("_Alta_basic_class", { { CAST::TypeModifierFlag::Pointer } }) });
+      fullParams.push_back({ "_Alta_isPersistent", header.createType("_Alta_bool", { { CAST::TypeModifierFlag::Constant } }) });
     }
 
     header.insertFunctionDeclaration(prefix + mangledName, fullParams, retType);
@@ -1824,6 +1902,19 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
 
     if (!isCtor) {
       source.insertVariableDefinition(retPtr, "_Alta_self", source.createCast(source.createFetch("__Alta_self"), retPtr));
+      source.insertConditionalStatement(
+        source.createAccessor(
+          source.createAccessor(
+            source.createDereference(
+              source.createFetch("_Alta_self")
+            ),
+            "_Alta_class_info_struct"
+          ),
+          "destroyed"
+        )
+      );
+      source.insertReturnDirective();
+      source.exitInsertionPoint();
     } else {
       for (size_t i = 0; i < constr->parameterVariables.size(); i++) {
         auto& var = constr->parameterVariables[i];
@@ -1986,6 +2077,7 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
             ),
             source.createType("_Alta_basic_class", { { CAST::TypeModifierFlag::Pointer } })
           ),
+          source.createFetch("_Alta_bool_false"),
         }));
       }
       for (auto& parent: info->klass->parents) {
@@ -2000,6 +2092,7 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
             ),
             source.createType("_Alta_basic_class", { { CAST::TypeModifierFlag::Pointer } })
           ),
+          source.createFetch("_Alta_bool_false"),
         }));
       }
       source.insertExpressionStatement(
@@ -2016,6 +2109,10 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
           source.createFetch("_Alta_bool_true")
         )
       );
+
+      source.insertConditionalStatement(source.createFetch("_Alta_isPersistent"));
+      source.insertExpressionStatement(source.createFunctionCall(source.createFetch("free"), { source.createFetch("_Alta_self") }));
+      source.exitInsertionPoint();
     }
 
     source.exitInsertionPoint();
@@ -2146,7 +2243,11 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
       }
       return source.createArrayLiteral(args, source.createType(mangleName(info->klass.get()), {}, !info->klass->isTyped));
     } else {
-      return source.createFunctionCall(source.createFetch("_cn_" + mangledCtor), args);
+      std::shared_ptr<CAST::Expression> call = source.createFunctionCall(source.createFetch((info->persistent ? "_cp_" : "_cn_") + mangledCtor), args);
+      if (info->persistent) {
+        call = source.createDereference(call);
+      }
+      return call;
     }
   } else if (nodeType == AAST::NodeType::ClassMethodDefinitionStatement) {
     auto method = dynamic_cast<AAST::ClassMethodDefinitionStatement*>(node);
@@ -2164,8 +2265,18 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
   } else if (nodeType == AAST::NodeType::WhileLoopStatement) {
     auto loop = dynamic_cast<AAST::WhileLoopStatement*>(node);
     auto info = dynamic_cast<DH::WhileLoopStatement*>(_info);
-    source.insertWhileLoop(transpile(loop->test.get(), info->test.get()));
+    source.insertWhileLoop(source.createFetch("_Alta_bool_true"));
+    source.insertBlock();
+    source.insertConditionalStatement(
+      source.createUnaryOperation(
+        CAST::UOperatorType::Not,
+        transpile(loop->test.get(), info->test.get())
+      )
+    );
+    source.insertExpressionStatement(source.createIntegerLiteral("break"));
+    source.exitInsertionPoint();
     transpile(loop->body.get(), info->body.get());
+    source.exitInsertionPoint();
     source.exitInsertionPoint();
   } else if (nodeType == AAST::NodeType::CastExpression) {
     auto cast = dynamic_cast<AAST::CastExpression*>(node);
@@ -2390,8 +2501,16 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     auto info = dynamic_cast<DH::ForLoopStatement*>(_info);
     source.insertBlock();
     source.insertExpressionStatement(transpile(loop->initializer.get(), info->initializer.get()));
-    source.insertWhileLoop(transpile(loop->condition.get(), info->condition.get()));
+    source.insertWhileLoop(source.createFetch("_Alta_bool_true"));
     source.insertBlock();
+    source.insertConditionalStatement(
+      source.createUnaryOperation(
+        CAST::UOperatorType::Not,
+        transpile(loop->condition.get(), info->condition.get())
+      )
+    );
+    source.insertExpressionStatement(source.createIntegerLiteral("break"));
+    source.exitInsertionPoint();
     transpile(loop->body.get(), info->body.get());
     source.insertExpressionStatement(transpile(loop->increment.get(), info->increment.get()));
     source.exitInsertionPoint();
@@ -2540,6 +2659,47 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
         defineFunctionalType(hoistedType, true);
       }
     }
+  } else if (nodeType == AltaNodeType::DeleteStatement) {
+    auto del = dynamic_cast<AAST::DeleteStatement*>(node);
+    auto info = dynamic_cast<DH::DeleteStatement*>(_info);
+
+    auto type = AltaCore::DET::Type::getUnderlyingType(info->target.get());
+    auto tgt = transpile(del->target.get(), info->target.get());
+
+    if (info->persistent) {
+      for (size_t i = 0; i < type->pointerLevel(); i++) {
+        tgt = source.createDereference(tgt);
+      }
+    }
+
+    if (!type->isNative) {
+      if (type->klass->destructor && type->indirectionLevel() < 1) {
+        source.insertExpressionStatement(
+          source.createFunctionCall(
+            source.createFetch(
+              "_d_" + mangleName(type->klass->destructor.get())
+            ),
+            {
+              tgt,
+              source.createFetch(info->persistent ? "_Alta_bool_true" : "_Alta_bool_false"),
+            }
+          )
+        );
+      } else if (info->persistent) {
+        source.insertExpressionStatement(
+          source.createFunctionCall(
+            source.createFetch("free"),
+            {
+              tgt,
+            }
+          )
+        );
+      }
+    }
+  } else if (nodeType == AltaNodeType::ControlDirective) {
+    auto ctrl = dynamic_cast<AAST::ControlDirective*>(node);
+
+    source.insertExpressionStatement(source.createIntegerLiteral(ctrl->isBreak ? "break" : "continue"));
   }
   return nullptr;
 };
