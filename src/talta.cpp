@@ -1756,7 +1756,13 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
         source.insertExpressionStatement(
           source.createAssignment(
             source.createAccessor(
-              infoStruct,
+              source.createAccessor(
+                source.createAccessor(
+                  childAccessor,
+                  mangledParentName
+                ),
+                "_Alta_class_info_struct"
+              ),
               "baseOffset"
             ),
             offsetToPush
