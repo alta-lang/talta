@@ -40,6 +40,7 @@ namespace Talta {
       void insertExportDefinition(std::string def);
       void saveExportDefinitions(bool inHeader = true);
       void restoreExportDefinitions(bool inHeader = true);
+      std::shared_ptr<Ceetah::AST::Expression> tmpify(std::shared_ptr<AltaCore::AST::ExpressionNode> expr, std::shared_ptr<AltaCore::DH::ExpressionNode> info);
     public:
       std::shared_ptr<Ceetah::AST::RootNode> cRoot = nullptr;
       std::shared_ptr<Ceetah::AST::RootNode> hRoot = nullptr;
