@@ -2086,6 +2086,23 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
       std::vector<std::shared_ptr<CAST::Expression>> pArgs = { source.createFetch("_Alta_self") };
       pArgs.insert(pArgs.end(), args.begin(), args.end());
       source.insertExpressionStatement(source.createFunctionCall(source.createFetch("_c_" + mangledName), pArgs));
+      source.insertExpressionStatement(
+        source.createFunctionCall(
+          source.createFetch("_Alta_object_stack_push"),
+          {
+            source.createPointer(
+              source.createAccessor(
+                source.createFetch("_Alta_global_runtime"),
+                "persistent"
+              )
+            ),
+            source.createCast(
+              source.createFetch("_Alta_self"),
+              source.createType("_Alta_basic_class", { { CAST::TypeModifierFlag::Pointer } })
+            ),
+          }
+        )
+      );
       source.insertReturnDirective(source.createFetch("_Alta_self"));
       source.exitInsertionPoint();
 
@@ -2522,6 +2539,26 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     }
 
     if (canDestroy) {
+      if (info->persistent) {
+        source.insertConditionalStatement(
+          source.createUnaryOperation(
+            CAST::UOperatorType::Not,
+            source.createFunctionCall(
+              source.createFetch("_Alta_object_stack_cherry_pick"),
+              {
+                source.createPointer(
+                  source.createAccessor(
+                    source.createFetch("_Alta_global_runtime"),
+                    "persistent"
+                  )
+                ),
+                tgt,
+              }
+            )
+          )
+        );
+        source.insertBlock();
+      }
       if (type->klass->destructor) {
         source.insertExpressionStatement(
           source.createFunctionCall(
@@ -2547,6 +2584,10 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
             }
           )
         );
+      }
+      if (info->persistent) {
+        source.exitInsertionPoint();
+        source.exitInsertionPoint();
       }
     } else if (info->persistent) {
       source.insertExpressionStatement(
