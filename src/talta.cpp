@@ -757,9 +757,11 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
 
       auto mangledFuncName = mangleName(info->function.get());
       std::vector<std::tuple<std::string, std::shared_ptr<CAST::Type>>> cParams;
+
       if (info->function->isMethod) {
         cParams.push_back(std::make_tuple("_Alta_self", transpileType(info->function->parentClassType.get())));
       }
+
       for (size_t i = 0; i < info->function->parameterVariables.size(); i++) {
         auto& var = info->function->parameterVariables[i];
         auto& param = aFunc->parameters[i];
@@ -774,7 +776,13 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
           cParams.push_back({ "_Alta_array_length_" + mangled, size_tType });
         }
       }
+
       auto returnType = transpileType(info->function->returnType.get());
+
+      if (info->function->throws) {
+        cParams.push_back(std::make_tuple("_Alta_return_value", returnType));
+        returnType = source.createType("_Alta_bool");
+      }
 
       source.insertFunctionDefinition(mangledFuncName, cParams, returnType);
       bool isMain = false;
@@ -902,22 +910,23 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     std::shared_ptr<Ceetah::AST::Expression> expr = nullptr;
     if (retDir->expression != nullptr) {
       auto transpiled = transpile(retDir->expression.get(), info->expression.get());
+      auto functionReturnType = info->parentFunction ? info->parentFunction->returnType : nullptr;
       // if we're returing a reference, there's no need to copy anything
-      if (info->functionReturnType && info->functionReturnType->referenceLevel() > 0) {
+      if (functionReturnType && functionReturnType->referenceLevel() > 0) {
         expr = transpiled;
       } else {
         bool didRetrieval = false;
         auto exprType = AltaCore::DET::Type::getUnderlyingType(info->expression.get());
-        auto val = doParentRetrieval(transpiled, exprType, info->functionReturnType, &didRetrieval);
+        auto val = doParentRetrieval(transpiled, exprType, functionReturnType, &didRetrieval);
         if (didRetrieval) {
-          val = doCopyCtor(val, info->functionReturnType);
+          val = doCopyCtor(val, functionReturnType);
         } else {
           val = doCopyCtor(val, retDir->expression, info->expression);
         }
         expr = val;
       }
-      if (info->functionReturnType) {
-        for (size_t i = 0; i < info->functionReturnType->referenceLevel(); i++) {
+      if (functionReturnType) {
+        for (size_t i = 0; i < functionReturnType->referenceLevel(); i++) {
           expr = source.createPointer(expr);
         }
       }
@@ -928,7 +937,7 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     if (expr) {
       auto id = tempVarIDs[currentScope->id]++;
       tmpName = mangleName(currentScope.get()) + "_temp_var_" + std::to_string(id);
-      source.insertVariableDefinition(transpileType(info->functionReturnType.get()), tmpName, expr);
+      source.insertVariableDefinition(transpileType(info->parentFunction->returnType.get()), tmpName, expr);
     }
 
     std::shared_ptr<AltaCore::DET::Scope> target = info->inputScope;
@@ -940,7 +949,21 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
       target = target->parent.lock();
     }
 
-    source.insertReturnDirective(expr ? source.createFetch(tmpName) : nullptr);
+    if (info->parentFunction->throws) {
+      if (expr) {
+        source.insertExpressionStatement(
+          source.createAssignment(
+            source.createDereference(
+              source.createFetch("_Alta_return_value")
+            ),
+            source.createFetch(tmpName)
+          )
+        );
+      }
+      source.insertReturnDirective(source.createFetch("_Alta_bool_true"));
+    } else {
+      source.insertReturnDirective(expr ? source.createFetch(tmpName) : nullptr);
+    }
   } else if (nodeType == AltaNodeType::IntegerLiteralNode) {
     auto intLit = dynamic_cast<AAST::IntegerLiteralNode*>(node);
     return source.createIntegerLiteral(intLit->raw);
@@ -2603,6 +2626,207 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     auto ctrl = dynamic_cast<AAST::ControlDirective*>(node);
 
     source.insertExpressionStatement(source.createIntegerLiteral(ctrl->isBreak ? "break" : "continue"));
+  } else if (nodeType == AltaNodeType::TryCatchBlock) {
+    auto blk = dynamic_cast<AAST::TryCatchBlock*>(node);
+    auto info = dynamic_cast<DH::TryCatchBlock*>(_info);
+
+    auto okName = mangleName(info->tryScope.get()) + "_ok";
+    source.insertVariableDefinition(
+      source.createType("_Alta_bool"),
+      okName,
+      source.createFetch("_Alta_bool_false")
+    );
+
+    source.insertWhileLoop(source.createFetch("_Alta_bool_true"));
+    source.insertBlock();
+    transpile(blk->tryBlock.get(), info->tryBlock.get());
+    source.insertExpressionStatement(
+      source.createAssignment(
+        source.createFetch(okName),
+        source.createFetch("_Alta_bool_true")
+      )
+    );
+    source.insertExpressionStatement(
+      source.createIntegerLiteral("break")
+    );
+    source.exitInsertionPoint();
+    source.exitInsertionPoint();
+
+    source.insertConditionalStatement(
+      source.createUnaryOperation(
+        CAST::UOperatorType::Not,
+        source.createFetch(okName)
+      )
+    );
+    source.insertBlock();
+
+    bool isFirst = true;
+
+    for (size_t i = 0; i < blk->catchBlocks.size(); i++) {
+      auto& [type, stmt] = blk->catchBlocks[i];
+      auto& id = blk->catchIDs[i];
+      auto& [typeDet, stmtDet] = info->catchBlocks[i];
+      auto& var = info->errorVariables[i];
+      auto& scope = info->catchScopes[i];
+
+      auto comparison = source.createBinaryOperation(
+        CAST::OperatorType::EqualTo,
+        source.createFunctionCall(
+          source.createFetch("strcmp"),
+          {
+            source.createAccessor(
+              source.createAccessor(
+                source.createFetch("_Alta_global_runtime"),
+                "lastError"
+              ),
+              "typeName"
+            ),
+            source.createStringLiteral(mangleType(typeDet->type.get())),
+          }
+        ),
+        source.createIntegerLiteral(0)
+      );
+
+      if (isFirst) {
+        isFirst = false;
+        source.insertConditionalStatement(comparison);
+      } else {
+        source.enterConditionalAlternative(i - 1);
+        source.insert(comparison);
+      }
+      source.insertBlock();
+
+      source.insertVariableDefinition(
+        transpileType(var->type.get()),
+        mangleName(var.get()),
+        source.createDereference(
+          source.createCast(
+            source.createAccessor(
+              source.createAccessor(
+                source.createFetch("_Alta_global_runtime"),
+                "lastError"
+              ),
+              "value"
+            ),
+            transpileType(var->type->point().get())
+          )
+        )
+      );
+
+      transpile(stmt.get(), stmtDet.get());
+
+      source.insertExpressionStatement(
+        source.createFunctionCall(source.createFetch("_Alta_reset_error"), {})
+      );
+
+      source.exitInsertionPoint();
+    }
+
+    if (!isFirst) {
+      source.enterConditionalUltimatum();
+    }
+
+    source.insertBlock();
+
+    source.insertExpressionStatement(
+      source.createFunctionCall(source.createFetch("_Alta_reset_error"), {})
+    );
+
+    if (blk->catchAllBlock) {
+      transpile(blk->catchAllBlock.get(), info->catchAllBlock.get());
+    } else {
+      source.insertReturnDirective(source.createFetch("_Alta_bool_false"));
+    }
+
+    source.exitInsertionPoint();
+
+    if (!isFirst) {
+      source.exitInsertionPoint();
+    }
+
+    source.exitInsertionPoint();
+    source.exitInsertionPoint();
+  } else if (nodeType == AltaNodeType::ThrowStatement) {
+    auto stmt = dynamic_cast<AAST::ThrowStatement*>(node);
+    auto info = dynamic_cast<DH::ThrowStatement*>(_info);
+
+    auto expr = transpile(stmt->expression.get(), info->expression.get());
+    expr = doCopyCtor(expr, stmt->expression, info->expression);
+
+    auto type = AltaCore::DET::Type::getUnderlyingType(info->expression.get())->deconstify();
+
+    source.insertExpressionStatement(
+      source.createAssignment(
+        source.createAccessor(
+          source.createAccessor(
+            source.createFetch("_Alta_global_runtime"),
+            "lastError"
+          ),
+          "isNative"
+        ),
+        source.createFetch(type->isNative ? "_Alta_bool_true" : "_Alta_bool_false")
+      )
+    );
+
+    source.insertExpressionStatement(
+      source.createAssignment(
+        source.createAccessor(
+          source.createAccessor(
+            source.createFetch("_Alta_global_runtime"),
+            "lastError"
+          ),
+          "typeName"
+        ),
+        source.createStringLiteral(mangleType(type.get()))
+      )
+    );
+
+    source.insertExpressionStatement(
+      source.createAssignment(
+        source.createAccessor(
+          source.createAccessor(
+            source.createFetch("_Alta_global_runtime"),
+            "lastError"
+          ),
+          "value"
+        ),
+        source.createFunctionCall(
+          source.createFetch("malloc"),
+          {
+            source.createSizeof(transpileType(type.get())),
+          }
+        )
+      )
+    );
+
+    source.insertExpressionStatement(
+      source.createAssignment(
+        source.createDereference(
+          source.createCast(
+            source.createAccessor(
+              source.createAccessor(
+                source.createFetch("_Alta_global_runtime"),
+                "lastError"
+              ),
+              "value"
+            ),
+            transpileType(type->point().get())
+          )
+        ),
+        expr
+      )
+    );
+
+    auto scope = info->inputScope->isTry ? info->inputScope : info->inputScope->findTry().lock();
+    if (auto func = scope->parentFunction.lock()) {
+      if (func->throws) {
+        source.insertReturnDirective(source.createFetch("_Alta_bool_false"));
+      }
+    } else {
+      source.insertExpressionStatement(
+        source.createIntegerLiteral("break")
+      );
+    }
   }
   return nullptr;
 };
