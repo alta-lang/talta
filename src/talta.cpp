@@ -2965,6 +2965,20 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
 
     source.insertExpressionStatement(
       source.createFunctionCall(
+        source.createFetch("_Alta_restore_state"),
+        {
+          source.createAccessor(
+            source.createDereference(
+              source.createFetch(tmpName)
+            ),
+            "state"
+          )
+        }
+      )
+    );
+
+    source.insertExpressionStatement(
+      source.createFunctionCall(
         source.createFetch("longjmp"),
         {
           source.createAccessor(
@@ -3064,6 +3078,20 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
               )
             }
           )
+        )
+      );
+
+      source.insertExpressionStatement(
+        source.createFunctionCall(
+          source.createFetch("_Alta_restore_state"),
+          {
+            source.createAccessor(
+              source.createDereference(
+                source.createFetch(tmpName)
+              ),
+              "state"
+            )
+          }
         )
       );
 
