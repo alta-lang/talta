@@ -764,6 +764,8 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
             auto mangledImportName = mangleName(dependency.get());
             source.insertPreprocessorDefinition(headerMangle(arg->klass.get()));
             source.insertPreprocessorInclusion("_ALTA_MODULE_" + mangledModName + "_0_INCLUDE_" + mangledImportName, CAST::InclusionType::Computed);
+          } else if (arg->isFunction) {
+            defineFunctionalType(arg, false);
           }
         }
       }
@@ -863,6 +865,8 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
             auto mangledImportName = mangleName(dependency.get());
             source.insertPreprocessorDefinition(headerMangle(arg->klass.get()));
             source.insertPreprocessorInclusion("_ALTA_MODULE_" + mangledModName + "_0_INCLUDE_" + mangledImportName, CAST::InclusionType::Computed);
+          } else if (arg->isFunction) {
+            defineFunctionalType(arg, false);
           }
         }
         auto mod = AltaCore::Util::getModule(info->function->parentScope.lock().get()).lock();
@@ -887,6 +891,8 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
             auto mangledImportName = mangleName(dependency.get());
             header.insertPreprocessorDefinition(headerMangle(arg->klass.get()));
             header.insertPreprocessorInclusion("_ALTA_MODULE_" + mangledModName + "_0_INCLUDE_" + mangledImportName, CAST::InclusionType::Computed);
+          } else if (arg->isFunction) {
+            defineFunctionalType(arg, true);
           }
         }
         header.insertFunctionDeclaration(mangledFuncName, cParams, returnType);
@@ -916,27 +922,34 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     auto retDir = dynamic_cast<AAST::ReturnDirectiveNode*>(node);
     auto info = dynamic_cast<DH::ReturnDirectiveNode*>(_info);
 
+    std::shared_ptr<Ceetah::AST::Expression> transpiled = nullptr;
     std::shared_ptr<Ceetah::AST::Expression> expr = nullptr;
+    bool isVoid = false;
     if (retDir->expression != nullptr) {
-      auto transpiled = transpile(retDir->expression.get(), info->expression.get());
+      transpiled = transpile(retDir->expression.get(), info->expression.get());
       auto functionReturnType = info->parentFunction ? info->parentFunction->returnType : nullptr;
-      // if we're returing a reference, there's no need to copy anything
-      if (functionReturnType && functionReturnType->referenceLevel() > 0) {
-        expr = transpiled;
+
+      if (functionReturnType && functionReturnType->nativeTypeName == AltaCore::DET::NativeType::Void && functionReturnType->modifiers.size() == 0) {
+        isVoid = true;
       } else {
-        bool didRetrieval = false;
-        auto exprType = AltaCore::DET::Type::getUnderlyingType(info->expression.get());
-        auto val = doParentRetrieval(transpiled, exprType, functionReturnType, &didRetrieval);
-        if (didRetrieval) {
-          val = doCopyCtor(val, functionReturnType);
+        // if we're returing a reference, there's no need to copy anything
+        if (functionReturnType && functionReturnType->referenceLevel() > 0) {
+          expr = transpiled;
         } else {
-          val = doCopyCtor(val, retDir->expression, info->expression);
+          bool didRetrieval = false;
+          auto exprType = AltaCore::DET::Type::getUnderlyingType(info->expression.get());
+          auto val = doParentRetrieval(transpiled, exprType, functionReturnType, &didRetrieval);
+          if (didRetrieval) {
+            val = doCopyCtor(val, functionReturnType);
+          } else {
+            val = doCopyCtor(val, retDir->expression, info->expression);
+          }
+          expr = val;
         }
-        expr = val;
-      }
-      if (functionReturnType) {
-        for (size_t i = 0; i < functionReturnType->referenceLevel(); i++) {
-          expr = source.createPointer(expr);
+        if (functionReturnType) {
+          for (size_t i = 0; i < functionReturnType->referenceLevel(); i++) {
+            expr = source.createPointer(expr);
+          }
         }
       }
     }
@@ -958,7 +971,11 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
       target = target->parent.lock();
     }
 
-    source.insertReturnDirective(expr ? source.createFetch(tmpName) : nullptr);
+    if (isVoid) {
+      source.insertReturnDirective(transpiled);
+    } else {
+      source.insertReturnDirective(expr ? source.createFetch(tmpName) : nullptr);
+    }
   } else if (nodeType == AltaNodeType::IntegerLiteralNode) {
     auto intLit = dynamic_cast<AAST::IntegerLiteralNode*>(node);
     return source.createIntegerLiteral(intLit->raw);
@@ -1436,6 +1453,8 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
           auto mangledImportName = mangleName(dependency.get());
           header.insertPreprocessorDefinition(headerMangle(arg->klass.get()));
           header.insertPreprocessorInclusion("_ALTA_MODULE_" + mangledModName + "_0_INCLUDE_" + mangledImportName, CAST::InclusionType::Computed);
+        } else if (arg->isFunction) {
+          defineFunctionalType(arg, true);
         }
       }
 
