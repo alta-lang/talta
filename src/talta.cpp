@@ -3169,6 +3169,9 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(AltaCore:
     source.exitInsertionPoint();
   } else if (nodeType == AltaNodeType::NullptrExpression) {
     return source.createFetch("NULL");
+  } else if (nodeType == AltaNodeType::CodeLiteralNode) {
+    auto code = dynamic_cast<AAST::CodeLiteralNode*>(node);
+    source.insertExpressionStatement(source.createFetch(code->raw));
   }
 
   currentScope = previousCurrentScope;
