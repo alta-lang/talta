@@ -41,6 +41,10 @@ namespace Talta {
       void saveExportDefinitions(bool inHeader = true);
       void restoreExportDefinitions(bool inHeader = true);
       std::shared_ptr<Ceetah::AST::Expression> tmpify(std::shared_ptr<AltaCore::AST::ExpressionNode> expr, std::shared_ptr<AltaCore::DH::ExpressionNode> info);
+      std::shared_ptr<Ceetah::AST::Expression> cast(std::shared_ptr<Ceetah::AST::Expression> expr, std::shared_ptr<AltaCore::DET::Type> source, std::shared_ptr<AltaCore::DET::Type> dest, bool copy = false, bool additionalCopyInfo = false);
+      inline bool additionalCopyInfo(AltaCore::AST::NodeType type) const {
+        return type != AltaCore::AST::NodeType::ClassInstantiationExpression && type != AltaCore::AST::NodeType::FunctionCallExpression;
+      };
     public:
       std::shared_ptr<Ceetah::AST::RootNode> cRoot = nullptr;
       std::shared_ptr<Ceetah::AST::RootNode> hRoot = nullptr;
@@ -50,6 +54,7 @@ namespace Talta {
       Ceetah::Builder source = Ceetah::Builder(cRoot);
       Ceetah::Builder header = Ceetah::Builder(hRoot);
       Ceetah::Builder definitions = Ceetah::Builder(dRoot);
+      Ceetah::Builder* target = &source;
       std::vector<std::pair<std::shared_ptr<AltaCore::DET::ScopeItem>, std::shared_ptr<Ceetah::AST::RootNode>>> generics;
     protected:
       std::shared_ptr<Ceetah::AST::Type> size_tType = source.createType("size_t", { { Ceetah::AST::TypeModifierFlag::Constant } });
