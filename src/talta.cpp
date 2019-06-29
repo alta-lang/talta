@@ -87,23 +87,35 @@ std::vector<std::shared_ptr<Ceetah::AST::Expression>> Talta::CTranspiler::proces
     auto& arg = adjustedArguments[i];
     auto [name, targetType, isVariable, id] = parameters[i];
     if (auto solo = ALTACORE_VARIANT_GET_IF<std::pair<std::shared_ptr<AAST::ExpressionNode>, std::shared_ptr<DH::ExpressionNode>>>(&arg)) {
-      auto& [arg, info] = *solo;
+      auto [arg, info] = *solo;
       auto transpiled = transpile(arg, info);
       auto exprType = AltaCore::DET::Type::getUnderlyingType(info.get());
-      args.push_back(cast(transpiled, exprType, targetType, true, additionalCopyInfo(arg->nodeType())));
+      auto result = cast(transpiled, exprType, targetType, true, additionalCopyInfo(arg->nodeType()));
+      for (size_t i = 0; i < targetType->referenceLevel(); i++) {
+        result = source.createPointer(result);
+      }
+      args.push_back(result);
     } else if (auto multi = ALTACORE_VARIANT_GET_IF<std::vector<std::pair<std::shared_ptr<AAST::ExpressionNode>, std::shared_ptr<DH::ExpressionNode>>>>(&arg)) {
       if (varargTable[id]) {
-        for (auto& [arg, info]: *multi) {
+        for (auto [arg, info]: *multi) {
           auto transpiled = transpile(arg, info);
           auto exprType = AltaCore::DET::Type::getUnderlyingType(info.get());
-          args.push_back(cast(transpiled, exprType, targetType, true, additionalCopyInfo(arg->nodeType())));
+          auto result = cast(transpiled, exprType, targetType, true, additionalCopyInfo(arg->nodeType()));
+          for (size_t i = 0; i < targetType->referenceLevel(); i++) {
+            result = source.createPointer(result);
+          }
+          args.push_back(result);
         }
       } else {
         std::vector<std::shared_ptr<CAST::Expression>> arrItems;
-        for (auto& [arg, info]: *multi) {
+        for (auto [arg, info]: *multi) {
           auto transpiled = transpile(arg, info);
           auto exprType = AltaCore::DET::Type::getUnderlyingType(info.get());
-          arrItems.push_back(cast(transpiled, exprType, targetType, true, additionalCopyInfo(arg->nodeType())));
+          auto result = cast(transpiled, exprType, targetType, true, additionalCopyInfo(arg->nodeType()));
+          for (size_t i = 0; i < targetType->referenceLevel(); i++) {
+            result = source.createPointer(result);
+          }
+          arrItems.push_back(result);
         }
         auto cType = transpileType(targetType.get());
         cType->arraySize = SIZE_MAX;
@@ -1055,7 +1067,11 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::cast(std::shared_pt
     );
     expr = cast(expr, exprType->unionOf[mostCompatibleIndex], dest, copy, true);
   } else if (!didRetrieval && dest->indirectionLevel() < 1 && !dest->isNative) {
-    throw std::runtime_error("can't cast a plain class to another class");
+    if (exprType->klass->id == dest->klass->id) {
+      // do nothing
+    } else {
+      throw std::runtime_error("can't cast a plain class to another class");
+    }
   } else if ((didRetrieval && dest->indirectionLevel() < 1) || (didChildRetrieval && dest->indirectionLevel() < 1)) {
     // do nothing
   } else if (!didRetrieval && !didChildRetrieval && !dest->isAny) {
@@ -1796,7 +1812,7 @@ auto Talta::CTranspiler::transpileBooleanLiteralNode(Coroutine& co) -> Coroutine
   } else {
     expr = source.createFetch("_Alta_bool_false");
   }
-  return co.finalYield();
+  return co.finalYield(expr);
 };
 auto Talta::CTranspiler::transpileBinaryOperation(Coroutine& co) -> Coroutine& {
   auto [node, _info] = co.arguments();
@@ -2466,7 +2482,7 @@ auto Talta::CTranspiler::transpileClassDefinitionNode(Coroutine& co) -> Coroutin
       source.exitInsertionPoint();
 
       co.save(isGeneric, genericIndex, (size_t)3);
-      co.save(sourceBuilderCache);
+      co.saveAny(sourceBuilderCache);
       co.save(&aClass->statements, &info->statements, false, (size_t)0, false);
       return co.yield();
     } else if (loopIteration == 1) {
@@ -2516,7 +2532,8 @@ auto Talta::CTranspiler::transpileClassDefinitionNode(Coroutine& co) -> Coroutin
           source = ALTACORE_ANY_CAST<Ceetah::Builder>(sbc);
         }
 
-        return co.finalYield();
+        co.save(isGeneric, genericIndex + 1, (size_t)0);
+        return co.yield();
       }
     } else {
       auto sbc = co.loadAny();
