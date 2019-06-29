@@ -409,7 +409,7 @@ void Talta::CTranspiler::defineFunctionalType(std::shared_ptr<AltaCore::DET::Typ
     auto def = "_ALTA_UNION_" + name.substr(11);
     target.insertPreprocessorConditional("!defined(" + def + ")");
     target.insertPreprocessorDefinition(def);
-    std::string uni = "union _u_" + name + '{';
+    std::string uni = "union _u_" + name + " {\n";
     for (auto& item: type->unionOf) {
       uni += transpileType(item.get())->toString() + " _m_" + mangleType(item.get()) + ";\n";
     }
@@ -440,8 +440,8 @@ void Talta::CTranspiler::defineFunctionalType(std::shared_ptr<AltaCore::DET::Typ
             target.createFetch("strcmp"),
             {
               target.createAccessor(
-                source.createDereference(
-                  source.createFetch("other")
+                target.createDereference(
+                  target.createFetch("other")
                 ),
                 "typeName"
               ),
@@ -457,11 +457,11 @@ void Talta::CTranspiler::defineFunctionalType(std::shared_ptr<AltaCore::DET::Typ
           target.insert(cmp);
         }
         ++i;
-        source.insertExpressionStatement(
-          source.createAssignment(
+        target.insertExpressionStatement(
+          target.createAssignment(
             target.createAccessor(
               target.createAccessor(
-                source.createFetch("result"),
+                target.createFetch("result"),
                 "members"
               ),
               "_m_" + mangledItem
@@ -469,8 +469,8 @@ void Talta::CTranspiler::defineFunctionalType(std::shared_ptr<AltaCore::DET::Typ
             doCopyCtor(
               target.createAccessor(
                 target.createAccessor(
-                  source.createDereference(
-                    source.createFetch("other")
+                  target.createDereference(
+                    target.createFetch("other")
                   ),
                   "members"
                 ),
@@ -483,7 +483,7 @@ void Talta::CTranspiler::defineFunctionalType(std::shared_ptr<AltaCore::DET::Typ
       }
     }
     if (i > 0) {
-      source.exitInsertionPoint();
+      target.exitInsertionPoint();
     }
     target.insertReturnDirective(target.createFetch("result"));
     target.exitInsertionPoint();
@@ -502,8 +502,8 @@ void Talta::CTranspiler::defineFunctionalType(std::shared_ptr<AltaCore::DET::Typ
             target.createFetch("strcmp"),
             {
               target.createAccessor(
-                source.createDereference(
-                  source.createFetch("self")
+                target.createDereference(
+                  target.createFetch("self")
                 ),
                 "typeName"
               ),
@@ -520,31 +520,31 @@ void Talta::CTranspiler::defineFunctionalType(std::shared_ptr<AltaCore::DET::Typ
         }
         ++i;
         target.insertExpressionStatement(
-          source.createFunctionCall(
-            source.createFetch("_d_" + mangleName(item->klass->destructor.get())),
+          target.createFunctionCall(
+            target.createFetch("_d_" + mangleName(item->klass->destructor.get())),
             {
-              source.createCast(
-                source.createPointer(
+              target.createCast(
+                target.createPointer(
                   target.createAccessor(
                     target.createAccessor(
-                      source.createDereference(
-                        source.createFetch("self")
+                      target.createDereference(
+                        target.createFetch("self")
                       ),
                       "members"
                     ),
                     "_m_" + mangledItem
                   )
                 ),
-                source.createType("_Alta_basic_class", { { Ceetah::AST::TypeModifierFlag::Pointer } })
+                target.createType("_Alta_basic_class", { { Ceetah::AST::TypeModifierFlag::Pointer } })
               ),
-              source.createFetch("_Alta_bool_false"),
+              target.createFetch("_Alta_bool_false"),
             }
           )
         );
       }
     }
     if (i > 0) {
-      source.exitInsertionPoint();
+      target.exitInsertionPoint();
     }
     target.exitInsertionPoint();
 
@@ -1153,7 +1153,7 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
             auto mangledImportName = mangleName(dependency.get());
             source.insertPreprocessorDefinition(headerMangle(arg->klass.get()));
             source.insertPreprocessorInclusion("_ALTA_MODULE_" + mangledModName + "_0_INCLUDE_" + mangledImportName, CAST::InclusionType::Computed);
-          } else if (arg->isFunction) {
+          } else {
             defineFunctionalType(arg, false);
           }
         }
@@ -1282,7 +1282,7 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
             auto mangledImportName = mangleName(dependency.get());
             source.insertPreprocessorDefinition(headerMangle(arg->klass.get()));
             source.insertPreprocessorInclusion("_ALTA_MODULE_" + mangledModName + "_0_INCLUDE_" + mangledImportName, CAST::InclusionType::Computed);
-          } else if (arg->isFunction) {
+          } else {
             defineFunctionalType(arg, false);
           }
         }
@@ -1308,7 +1308,7 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
             auto mangledImportName = mangleName(dependency.get());
             header.insertPreprocessorDefinition(headerMangle(arg->klass.get()));
             header.insertPreprocessorInclusion("_ALTA_MODULE_" + mangledModName + "_0_INCLUDE_" + mangledImportName, CAST::InclusionType::Computed);
-          } else if (arg->isFunction) {
+          } else {
             defineFunctionalType(arg, true);
           }
         }
@@ -2092,7 +2092,7 @@ auto Talta::CTranspiler::transpileClassDefinitionNode(Coroutine& co) -> Coroutin
           auto mangledImportName = mangleName(dependency.get());
           header.insertPreprocessorDefinition(headerMangle(arg->klass.get()));
           header.insertPreprocessorInclusion("_ALTA_MODULE_" + mangledModName + "_0_INCLUDE_" + mangledImportName, CAST::InclusionType::Computed);
-        } else if (arg->isFunction) {
+        } else {
           defineFunctionalType(arg, true);
         }
       }
