@@ -46,12 +46,12 @@ namespace Talta {
           return *_arguments;
         };
 
-        template<class V = ALTACORE_ANY>
+        template<class V>
         inline V result() const {
           return ALTACORE_ANY_CAST<V>(value);
         };
-        template<>
-        inline ALTACORE_ANY result<ALTACORE_ANY>() const {
+
+        inline ALTACORE_ANY resultAny() const {
           return value;
         };
 

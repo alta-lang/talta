@@ -1089,7 +1089,7 @@ auto Talta::CTranspiler::transpile(Coroutine& co) -> Coroutine& {
   } else {
     auto [previousCurrentScope] = co.load<std::shared_ptr<DET::Scope>>();
     currentScope = previousCurrentScope;
-    return co.finalYield(co.result());
+    return co.finalYield(co.resultAny());
   }
 };
 
