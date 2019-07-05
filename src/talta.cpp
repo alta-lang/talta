@@ -398,7 +398,7 @@ void Talta::CTranspiler::headerPredeclaration(std::string def, std::string mangl
   if (mangledModName.empty()) {
     defStr = "!defined(_DEFINED_" + def + ')';
   } else {
-    defStr = "(defined(" + def + ")" + (includeAll ? (" || defined(_ALTA_MODULE_ALL_" + mangledModName + ')') : "") + ") && !defined(_DEFINED_" + def + ')';
+    defStr = "(defined(" + def + ")) && !defined(_DEFINED_" + def + ')';
   }
   header.insertPreprocessorConditional(defStr);
   header.insertPreprocessorUndefinition(def);
@@ -923,19 +923,23 @@ void Talta::CTranspiler::insertExportDefinition(std::string def) {
 };
 
 void Talta::CTranspiler::saveExportDefinitions(bool inHeader) {
+  /*
   auto modName = mangleName(currentModule.get());
   Ceetah::Builder& target = inHeader ? header : source;
 
   target.insertPreprocessorDefinition("_ALTA_SAVE_DEFS_" + modName);
   target.insertPreprocessorInclusion("_ALTA_DEF_HEADER_" + modName, Ceetah::AST::InclusionType::Computed);
   target.insertPreprocessorUndefinition("_ALTA_SAVE_DEFS_" + modName);
+  */
 };
 
 void Talta::CTranspiler::restoreExportDefinitions(bool inHeader) {
+  /*
   auto modName = mangleName(currentModule.get());
   Ceetah::Builder& target = inHeader ? header : source;
 
   target.insertPreprocessorInclusion("_ALTA_DEF_HEADER_" + modName, Ceetah::AST::InclusionType::Computed);
+  */
 };
 
 auto Talta::CTranspiler::tmpify(Coroutine& co) -> Coroutine& {
@@ -1258,6 +1262,8 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
 
       auto returnType = transpileType(info->function->returnType.get());
 
+      hoist(info->function, false);
+
       source.insertFunctionDefinition(mangledFuncName, cParams, returnType);
       bool isMain = false;
       if (info->function->isLiteral && info->function->name == "main") {
@@ -1538,6 +1544,10 @@ auto Talta::CTranspiler::transpileVariableDefinitionExpression(Coroutine& co) ->
 
     for (size_t i = 0; i < info->type->type->referenceLevel(); i++) {
       init = source.createPointer(init);
+    }
+
+    if (inModuleRoot) {
+      hoist(info->variable, false);
     }
 
     source.insertVariableDefinition(type, mangledVarName, init);
@@ -1904,15 +1914,21 @@ auto Talta::CTranspiler::transpileImportStatement(Coroutine& co) -> Coroutine& {
   auto mangledParentName = mangleName(info->parentModule.get());
   auto mangleImportName = mangleName(info->importedModule.get());
   if (import->isAliased) {
-    header.insertPreprocessorDefinition("_ALTA_MODULE_ALL_" + mangleImportName);
+    //header.insertPreprocessorDefinition("_ALTA_MODULE_ALL_" + mangleImportName);
+    header.insertPreprocessorInclusion("_ALTA_MODULE_" + mangledParentName + "_0_INCLUDE_" + mangleImportName, CAST::InclusionType::Computed);
   } else {
+    bool imp = false;
     for (auto& item: info->importedItems) {
       auto def = headerMangle(item.get());
       if (def.empty()) continue;
+      imp = true;
       header.insertPreprocessorDefinition(def);
+      header.insertPreprocessorInclusion("_ALTA_MODULE_" + mangledParentName + "_0_INCLUDE_" + mangleImportName, CAST::InclusionType::Computed);
+    }
+    if (!imp) {
+      header.insertPreprocessorInclusion("_ALTA_MODULE_" + mangledParentName + "_0_INCLUDE_" + mangleImportName, CAST::InclusionType::Computed);
     }
   }
-  header.insertPreprocessorInclusion("_ALTA_MODULE_" + mangledParentName + "_0_INCLUDE_" + mangleImportName, CAST::InclusionType::Computed);
   return co.finalYield();
 };
 auto Talta::CTranspiler::transpileFunctionCallExpression(Coroutine& co) -> Coroutine& {
@@ -2159,6 +2175,8 @@ auto Talta::CTranspiler::transpileClassDefinitionNode(Coroutine& co) -> Coroutin
       auto self = header.createType(mangledClassName, { { CAST::TypeModifierFlag::Pointer } });
       auto basicClassType = header.createType("_Alta_basic_class", { { CAST::TypeModifierFlag::Pointer } });
       auto rawstringType = header.createType("char", { { CAST::TypeModifierFlag::Pointer } });
+
+      hoist(info->klass, false);
 
       if (!klassInfo->klass->scope->noRuntime) {
         header.insertFunctionDeclaration("_Alta_getParentClass_" + mangledClassName, {
