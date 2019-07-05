@@ -194,12 +194,12 @@ namespace Talta {
       std::shared_ptr<Ceetah::AST::Type> transpileType(AltaCore::DET::Type* type);
       void headerPredeclaration(std::string def, std::string mangledModuleName, bool includeAll = true);
       std::vector<uint8_t> convertTypeModifiers(std::vector<uint8_t> altaModifiers);
-      void defineFunctionalType(std::shared_ptr<AltaCore::DET::Type> type, bool inHeader = false);
+      void hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, bool inHeader = false);
       std::vector<std::shared_ptr<Ceetah::AST::Expression>> processArgs(std::vector<ALTACORE_VARIANT<std::pair<std::shared_ptr<AltaCore::AST::ExpressionNode>, std::shared_ptr<AltaCore::DH::ExpressionNode>>, std::vector<std::pair<std::shared_ptr<AltaCore::AST::ExpressionNode>, std::shared_ptr<AltaCore::DH::ExpressionNode>>>>> adjustedArguments, std::vector<std::tuple<std::string, std::shared_ptr<AltaCore::DET::Type>, bool, std::string>> func);
       void stackBookkeepingStart(std::shared_ptr<AltaCore::DET::Scope> scope);
       void stackBookkeepingStop(std::shared_ptr<AltaCore::DET::Scope> scope);
-      std::shared_ptr<Ceetah::AST::Expression> doCopyCtor(std::shared_ptr<Ceetah::AST::Expression> transpiled, std::shared_ptr<AltaCore::AST::ExpressionNode> expr, std::shared_ptr<AltaCore::DH::ExpressionNode> info);
-      std::shared_ptr<Ceetah::AST::Expression> doCopyCtor(std::shared_ptr<Ceetah::AST::Expression> expr, std::shared_ptr<AltaCore::DET::Type> exprType);
+      std::shared_ptr<Ceetah::AST::Expression> doCopyCtor(std::shared_ptr<Ceetah::AST::Expression> transpiled, std::shared_ptr<AltaCore::AST::ExpressionNode> expr, std::shared_ptr<AltaCore::DH::ExpressionNode> info, bool* didCopy = nullptr);
+      std::shared_ptr<Ceetah::AST::Expression> doCopyCtor(std::shared_ptr<Ceetah::AST::Expression> expr, std::shared_ptr<AltaCore::DET::Type> exprType, bool* didCopy = nullptr);
       std::shared_ptr<Ceetah::AST::Expression> doParentRetrieval(std::shared_ptr<Ceetah::AST::Expression> expr, std::shared_ptr<AltaCore::DET::Type> exprType, std::shared_ptr<AltaCore::DET::Type> targetType, bool* didRetrieval = nullptr);
       std::shared_ptr<Ceetah::AST::Expression> doChildRetrieval(std::shared_ptr<Ceetah::AST::Expression> expr, std::shared_ptr<AltaCore::DET::Type> exprType, std::shared_ptr<AltaCore::DET::Type> targetType, bool* didRetrieval = nullptr);
       void includeGeneric(std::shared_ptr<AltaCore::DET::ScopeItem> generic, bool inHeader = false);
@@ -210,6 +210,7 @@ namespace Talta {
       inline bool additionalCopyInfo(AltaCore::AST::NodeType type) const {
         return type != AltaCore::AST::NodeType::ClassInstantiationExpression && type != AltaCore::AST::NodeType::FunctionCallExpression;
       };
+      void includeClassIfNecessary(std::shared_ptr<AltaCore::DET::Type> type);
 
       // <coroutine-helpers>
       auto bind(const CoroutineMemberFunction function) -> Coroutine::FunctionType;
@@ -264,6 +265,7 @@ namespace Talta {
       Coroutine& transpileThrowStatement(Coroutine& co);
       Coroutine& transpileNullptrExpression(Coroutine& co);
       Coroutine& transpileCodeLiteralNode(Coroutine& co);
+      Coroutine& transpileAttributeStatement(Coroutine& co);
       // </transpilation-methods>
 
       static const ALTACORE_MAP<AltaCore::AST::NodeType, CoroutineMemberFunction> transpilationMethods;
