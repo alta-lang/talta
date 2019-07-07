@@ -266,6 +266,7 @@ namespace Talta {
       Coroutine& transpileNullptrExpression(Coroutine& co);
       Coroutine& transpileCodeLiteralNode(Coroutine& co);
       Coroutine& transpileAttributeStatement(Coroutine& co);
+      Coroutine& transpileBitfieldDefinitionNode(Coroutine& co);
       // </transpilation-methods>
 
       static const ALTACORE_MAP<AltaCore::AST::NodeType, CoroutineMemberFunction> transpilationMethods;

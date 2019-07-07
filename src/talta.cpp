@@ -78,6 +78,7 @@ namespace Talta {
     { ANT::NullptrExpression, &CTranspiler::transpileNullptrExpression },
     { ANT::CodeLiteralNode, &CTranspiler::transpileCodeLiteralNode },
     { ANT::AttributeStatement, &CTranspiler::transpileAttributeStatement },
+    { ANT::BitfieldDefinitionNode, &CTranspiler::transpileBitfieldDefinitionNode },
   };
 };
 
@@ -1486,7 +1487,7 @@ auto Talta::CTranspiler::transpileReturnDirectiveNode(Coroutine& co) -> Coroutin
 auto Talta::CTranspiler::transpileIntegerLiteralNode(Coroutine& co) -> Coroutine& {
   auto [node, _info] = co.arguments();
   auto intLit = std::dynamic_pointer_cast<AAST::IntegerLiteralNode>(node);
-  CExpression expr = source.createIntegerLiteral(intLit->raw);
+  CExpression expr = source.createIntegerLiteral(intLit->integer);
   return co.finalYield(expr);
 };
 
@@ -1658,9 +1659,32 @@ auto Talta::CTranspiler::transpileAccessor(Coroutine& co) -> Coroutine& {
           )
         );
       }
-      result = source.createAccessor(tgt, mangleName(info->narrowedTo.get()));
-      auto ut = AltaCore::DET::Type::getUnderlyingType(info->narrowedTo);
-      refLevel = ut->referenceLevel();
+      if (info->targetType->bitfield) {
+        auto bitfieldField = std::dynamic_pointer_cast<DET::Variable>(info->narrowedTo);
+        auto [start, end] = bitfieldField->bitfieldBits;
+        std::string bits;
+        for (size_t i = start; i <= end; i++) {
+          bits.push_back('1');
+        }
+        for (size_t i = 0; i < start; i++) {
+          bits.push_back('0');
+        }
+        auto mask = std::stoull(bits, nullptr, 2);
+        result = source.createBinaryOperation(
+          CAST::OperatorType::RightShift,
+          source.createBinaryOperation(
+            CAST::OperatorType::BitwiseAnd,
+            tgt,
+            source.createIntegerLiteral(mask)
+          ),
+          source.createIntegerLiteral(start)
+        );
+        refLevel = 0;
+      } else {
+        result = source.createAccessor(tgt, mangleName(info->narrowedTo.get()));
+        auto ut = AltaCore::DET::Type::getUnderlyingType(info->narrowedTo);
+        refLevel = ut->referenceLevel();
+      }
     } else if (info->readAccessor) {
       auto readAccFetch = source.createFetch(mangleName(info->readAccessor.get()));
 
@@ -1795,9 +1819,28 @@ auto Talta::CTranspiler::transpileAssignmentExpression(Coroutine& co) -> Corouti
       bool,
       bool
     >();
+    auto expr = co.result<CExpression>();
+
+    if (auto acc = std::dynamic_pointer_cast<DH::Accessor>(info->target)) {
+      if (auto var = std::dynamic_pointer_cast<DET::Variable>(acc->narrowedTo)) {
+        if (var->isBitfieldEntry) {
+          auto tgtExpr = std::dynamic_pointer_cast<CAST::BinaryOperation>(tgt);
+          tgtExpr = std::dynamic_pointer_cast<CAST::BinaryOperation>(tgtExpr->left);
+          CExpression result = source.createDereference(
+            source.createFunctionCall(
+              source.createFetch("_Alta_bitfield_set_" + mangleName(var.get())),
+              {
+                source.createPointer(tgtExpr->left),
+                expr
+              }
+            )
+          );
+          return co.finalYield(result);
+        }
+      }
+    }
 
     bool didRetrieval = false;
-    auto expr = co.result<CExpression>();
     auto exprType = AltaCore::DET::Type::getUnderlyingType(info->value.get());
     auto val = tgtType->isUnion() ? expr : doParentRetrieval(expr, exprType, tgtType, &didRetrieval);
 
@@ -4196,6 +4239,73 @@ auto Talta::CTranspiler::transpileAttributeStatement(Coroutine& co) -> Coroutine
       )
     );
   }
+  return co.finalYield();
+};
+auto Talta::CTranspiler::transpileBitfieldDefinitionNode(Coroutine& co) -> Coroutine& {
+  auto [node, _info] = co.arguments();
+  auto bits = std::dynamic_pointer_cast<AAST::BitfieldDefinitionNode>(node);
+  auto info = std::dynamic_pointer_cast<DH::BitfieldDefinitionNode>(_info);
+  auto mangledName = mangleName(info->bitfield.get());
+  auto& target = (info->isExport) ? header : source;
+  target.insertPreprocessorConditional("!defined(_ALTA_BITFIELD_" + mangledName + ")");
+  target.insertPreprocessorDefinition("_ALTA_BITFIELD_" + mangledName);
+  auto bitfieldType = info->bitfield->underlyingBitfieldType.lock()->destroyReferences();
+  auto underylingTypePtr = transpileType(bitfieldType->reference().get());
+  for (size_t i = 0; i < bits->members.size(); i++) {
+    auto [type, name, start, end] = bits->members[i];
+    auto fieldType = transpileType(info->memberTypes[i]->type->destroyReferences().get());
+    target.insertFunctionDefinition(
+      "_Alta_bitfield_set_" + mangleName(info->memberVariables[i].get()),
+      {
+        { "destination", underylingTypePtr },
+        { "source", fieldType },
+      },
+      underylingTypePtr,
+      true
+    );
+    for (size_t n = start; n <= end; n++) {
+      target.insertExpressionStatement(
+        target.createAssignment(
+          target.createDereference(
+            target.createFetch("destination")
+          ),
+          target.createBinaryOperation(
+            CAST::OperatorType::BitwiseOr,
+            target.createBinaryOperation(
+              CAST::OperatorType::BitwiseAnd,
+              target.createDereference(
+                target.createFetch("destination")
+              ),
+              target.createUnaryOperation(
+                CAST::UOperatorType::BitwiseNot,
+                target.createBinaryOperation(
+                  CAST::OperatorType::LeftShift,
+                  target.createIntegerLiteral("1UL"),
+                  target.createIntegerLiteral(n)
+                )
+              )
+            ),
+            target.createBinaryOperation(
+              CAST::OperatorType::LeftShift,
+              target.createBinaryOperation(
+                CAST::OperatorType::BitwiseAnd,
+                target.createFetch("source"),
+                target.createBinaryOperation(
+                  CAST::OperatorType::LeftShift,
+                  target.createIntegerLiteral("1UL"),
+                  target.createIntegerLiteral(n - start)
+                )
+              ),
+              target.createIntegerLiteral(start)
+            )
+          )
+        )
+      );
+    }
+    target.insertReturnDirective(target.createFetch("destination"));
+    target.exitInsertionPoint();
+  }
+  target.exitInsertionPoint();
   return co.finalYield();
 };
 // </transpilation-coroutines>
