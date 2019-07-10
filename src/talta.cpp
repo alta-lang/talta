@@ -16,6 +16,7 @@ namespace Talta {
   ALTACORE_MAP<std::string, size_t> tempVarIDs;
   ALTACORE_MAP<std::string, bool> inHeaderTable;
   ALTACORE_MAP<std::string, bool> alwaysImportTable;
+  ALTACORE_MAP<std::string, bool> packedTable;
 
   std::shared_ptr<AltaCore::DET::ScopeItem> followAlias(std::shared_ptr<AltaCore::DET::ScopeItem> maybeAlias) {
     while (auto alias = std::dynamic_pointer_cast<AltaCore::DET::Alias>(maybeAlias)) {
@@ -3421,13 +3422,16 @@ auto Talta::CTranspiler::transpileForLoopStatement(Coroutine& co) -> Coroutine& 
   auto info = std::dynamic_pointer_cast<DH::ForLoopStatement>(_info);
   if (co.iteration() == 0) {
     source.insertBlock();
-    return co.await(boundTranspile, loop->initializer, info->initializer);
+    return co.await(boundTranspile, loop->increment, info->increment);
   } else if (co.iteration() == 1) {
+    source.insertPreprocessorDefinition("_ALTA_" + mangleName(info->scope.get()) + "_NEXT_ITERATION", co.result<CExpression>()->toString());
+    return co.await(boundTranspile, loop->initializer, info->initializer);
+  } else if (co.iteration() == 2) {
     source.insertExpressionStatement(co.result<CExpression>());
     source.insertWhileLoop(source.createFetch("_Alta_bool_true"));
     source.insertBlock();
     return co.await(boundTranspile, loop->condition, info->condition);
-  } else if (co.iteration() == 2) {
+  } else if (co.iteration() == 3) {
     source.insertConditionalStatement(
       source.createUnaryOperation(
         CAST::UOperatorType::Not,
@@ -3437,10 +3441,8 @@ auto Talta::CTranspiler::transpileForLoopStatement(Coroutine& co) -> Coroutine& 
     source.insertExpressionStatement(source.createIntegerLiteral("break"));
     source.exitInsertionPoint();
     return co.await(boundTranspile, loop->body, info->body);
-  } else if (co.iteration() == 3) {
-    return co.await(boundTranspile, loop->increment, info->increment);
   } else {
-    source.insertExpressionStatement(co.result<CExpression>());
+    source.insertExpressionStatement(source.createFetch("_ALTA_" + mangleName(info->scope.get()) + "_NEXT_ITERATION"));
     source.exitInsertionPoint();
     source.exitInsertionPoint();
     source.exitInsertionPoint();
@@ -3462,6 +3464,17 @@ auto Talta::CTranspiler::transpileRangedForLoopStatement(Coroutine& co) -> Corou
       mangledCounter,
       co.result<CExpression>()
     );
+
+    auto inc = source.createAssignment(
+      source.createFetch(mangledCounter),
+      source.createBinaryOperation(
+        (loop->decrement) ? CAST::OperatorType::Subtraction : CAST::OperatorType::Addition,
+        source.createFetch(mangledCounter),
+        source.createIntegerLiteral(1)
+      )
+    );
+
+    source.insertPreprocessorDefinition("_ALTA_" + mangleName(info->scope.get()) + "_NEXT_ITERATION", inc->toString());
 
     co.save(mangledCounter);
     return co.await(boundTranspile, loop->end, info->end);
@@ -3491,21 +3504,9 @@ auto Talta::CTranspiler::transpileRangedForLoopStatement(Coroutine& co) -> Corou
       )
     );
     source.insertBlock();
-
-    co.save(mangledCounter);
     return co.await(boundTranspile, loop->body, info->body);
   } else {
-    auto [mangledCounter] = co.load<std::string>();
-    source.insertExpressionStatement(
-      source.createAssignment(
-        source.createFetch(mangledCounter),
-        source.createBinaryOperation(
-          (loop->decrement) ? CAST::OperatorType::Subtraction : CAST::OperatorType::Addition,
-          source.createFetch(mangledCounter),
-          source.createIntegerLiteral(1)
-        )
-      )
-    );
+    source.insertExpressionStatement(source.createFetch("_ALTA_" + mangleName(info->scope.get()) + "_NEXT_ITERATION"));
     source.exitInsertionPoint();
     source.exitInsertionPoint();
     source.exitInsertionPoint();
@@ -3574,7 +3575,7 @@ auto Talta::CTranspiler::transpileStructureDefinitionStatement(Coroutine& co) ->
   }
 
   auto name = info->isLiteral ? structure->name : mangledClassName;
-  target.insertStructureDefinition((info->isTyped ? "_struct_" : "") + name, members);
+  target.insertStructureDefinition((info->isTyped ? "_struct_" : "") + name, members, packedTable.find(structure->id) != packedTable.end());
   
   if (info->isTyped) {
     target.insertTypeDefinition(name, target.createType("_struct_" + name, {}, true));
@@ -3721,8 +3722,24 @@ auto Talta::CTranspiler::transpileDeleteStatement(Coroutine& co) -> Coroutine& {
 auto Talta::CTranspiler::transpileControlDirective(Coroutine& co) -> Coroutine& {
   auto [node, _info] = co.arguments();
   auto ctrl = std::dynamic_pointer_cast<AAST::ControlDirective>(node);
+  auto loopScope = AltaCore::Util::findLoopScope(_info->inputScope);
+
+
+  if (!loopScope) {
+    throw std::runtime_error("no loop found for loop control directive");
+  }
+
+  if (!ctrl->isBreak) {
+    source.insertBlock();
+    source.insertExpressionStatement(source.createFetch("_ALTA_" + mangleName(loopScope.get()) + "_NEXT_ITERATION"));
+  }
 
   source.insertExpressionStatement(source.createIntegerLiteral(ctrl->isBreak ? "break" : "continue"));
+
+  if (!ctrl->isBreak) {
+    source.exitInsertionPoint();
+  }
+
   return co.finalYield();
 };
 auto Talta::CTranspiler::transpileTryCatchBlock(Coroutine& co) -> Coroutine& {
@@ -4231,13 +4248,23 @@ auto Talta::CTranspiler::transpileAttributeStatement(Coroutine& co) -> Coroutine
   auto [node, _info] = co.arguments();
   auto attrStmt = std::dynamic_pointer_cast<AAST::AttributeStatement>(node);
   auto info = std::dynamic_pointer_cast<DH::AttributeStatement>(_info);
-  if (info->attribute->attribute && info->attribute->attribute->id == "initializeModule") {
-    source.insertExpressionStatement(
-      source.createFunctionCall(
-        source.createFetch("_Alta_module_init_" + mangleName(currentModule.get())),
-        {}
-      )
-    );
+  if (info->attribute->attribute) {
+    auto id = info->attribute->attribute->id;
+    if (id == "initializeModule") {
+      source.insertExpressionStatement(
+        source.createFunctionCall(
+          source.createFetch("_Alta_module_init_" + mangleName(currentModule.get())),
+          {}
+        )
+      );
+    } else if (id == "initializeRuntime") {
+      source.insertExpressionStatement(
+        source.createFunctionCall(
+          source.createFetch("_Alta_init_global_runtime"),
+          {}
+        )
+      );
+    }
   }
   return co.finalYield();
 };
@@ -4485,5 +4512,10 @@ void Talta::registerAttributes(AltaCore::Filesystem::Path modulePath) {
     } else {
       alwaysImportTable[_target->id] = true;
     }
+  AC_END_ATTRIBUTE;
+  AC_GENERAL_ATTRIBUTE("initializeRuntime");
+  AC_END_ATTRIBUTE;
+  AC_ATTRIBUTE(StructureDefinitionStatement, "CTranspiler", "packed");
+    packedTable[target->id] = true;
   AC_END_ATTRIBUTE;
 };
