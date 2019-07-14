@@ -1660,7 +1660,7 @@ auto Talta::CTranspiler::transpileAccessor(Coroutine& co) -> Coroutine& {
           )
         );
       }
-      if (info->targetType->bitfield) {
+      if (info->targetType && info->targetType->bitfield) {
         auto bitfieldField = std::dynamic_pointer_cast<DET::Variable>(info->narrowedTo);
         auto [start, end] = bitfieldField->bitfieldBits;
         std::string bits;
