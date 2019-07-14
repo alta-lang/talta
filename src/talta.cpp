@@ -2219,17 +2219,18 @@ auto Talta::CTranspiler::transpileClassDefinitionNode(Coroutine& co) -> Coroutin
       auto self = header.createType(mangledClassName, { { CAST::TypeModifierFlag::Pointer } });
       auto basicClassType = header.createType("_Alta_basic_class", { { CAST::TypeModifierFlag::Pointer } });
       auto rawstringType = header.createType("char", { { CAST::TypeModifierFlag::Pointer } });
+      auto rawconststringType = header.createType("char", { { CAST::TypeModifierFlag::Pointer }, { CAST::TypeModifierFlag::Constant } });
 
       hoist(info->klass, false);
 
       if (!klassInfo->klass->scope->noRuntime) {
         header.insertFunctionDeclaration("_Alta_getParentClass_" + mangledClassName, {
           std::make_tuple("_Alta_self", self),
-          std::make_tuple("target", rawstringType),
+          std::make_tuple("target", rawconststringType),
         }, basicClassType);
         source.insertFunctionDefinition("_Alta_getParentClass_" + mangledClassName, {
           std::make_tuple("_Alta_self", self),
-          std::make_tuple("target", rawstringType),
+          std::make_tuple("target", rawconststringType),
         }, basicClassType);
 
         // parent check
@@ -2249,13 +2250,16 @@ auto Talta::CTranspiler::transpileClassDefinitionNode(Coroutine& co) -> Coroutin
             )
           );
           source.insertReturnDirective(
-            source.createPointer(
-              source.createAccessor(
-                source.createDereference(
-                  source.createFetch("_Alta_self")
-                ),
-                mangled
-              )
+            source.createCast(
+              source.createPointer(
+                source.createAccessor(
+                  source.createDereference(
+                    source.createFetch("_Alta_self")
+                  ),
+                  mangled
+                )
+              ),
+              basicClassType
             )
           );
           source.exitInsertionPoint();
