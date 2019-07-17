@@ -1689,6 +1689,34 @@ auto Talta::CTranspiler::transpileAccessor(Coroutine& co) -> Coroutine& {
     } else if (info->readAccessor) {
       auto readAccFetch = source.createFetch(mangleName(info->readAccessor.get()));
 
+      auto tmpName = mangleName(info->inputScope.get()) + "_temp_var_" + std::to_string(tempVarIDs[info->inputScope->id]++);
+
+      source.insertVariableDefinition(transpileType(info->readAccessor->returnType.get()), tmpName);
+
+      if (!currentScope->noRuntime && !info->readAccessor->returnType->isNative && info->readAccessor->returnType->indirectionLevel() < 1) {
+        source.insertExpressionStatement(
+          source.createFunctionCall(
+            source.createFetch(
+              info->readAccessor->returnType->isUnion()
+                ? "_Alta_object_stack_push_union"
+                : "_Alta_object_stack_push"
+            ),
+            {
+              source.createPointer(source.createFetch("_Alta_global_runtime.local")),
+              source.createCast(
+                source.createPointer(source.createFetch(tmpName)),
+                source.createType(
+                  info->readAccessor->returnType->isUnion()
+                    ? "_Alta_basic_union"
+                    : "_Alta_basic_class",
+                  { { Ceetah::AST::TypeModifierFlag::Pointer } }
+                )
+              ),
+            }
+          )
+        );
+      }
+
       std::vector<std::shared_ptr<Ceetah::AST::Expression>> args;
       if (!info->accessesNamespace) {
         auto selfAlta = acc->target;
@@ -1723,8 +1751,14 @@ auto Talta::CTranspiler::transpileAccessor(Coroutine& co) -> Coroutine& {
         }
         args.push_back(source.createPointer(self));
       }
-      
-      result = source.createFunctionCall(readAccFetch, args);
+
+      result = source.createMultiExpression({
+        source.createAssignment(
+          source.createFetch(tmpName),
+          source.createFunctionCall(readAccFetch, args)
+        ),
+        source.createFetch(tmpName),
+      });
       refLevel = info->readAccessor->returnType->referenceLevel();
     }
     if (!result) {
@@ -1742,6 +1776,10 @@ auto Talta::CTranspiler::transpileFetch(Coroutine& co) -> Coroutine& {
   auto info = std::dynamic_pointer_cast<DH::Fetch>(_info);
 
   if (!info->narrowedTo) {
+    if (info->readAccessor) {
+      CExpression cFetch = source.createFunctionCall(source.createFetch(mangleName(info->readAccessor.get())), {});
+      return co.finalYield(cFetch);
+    }
     throw std::runtime_error("AHH, this fetch needs to be narrowed!");
   }
   if (info->narrowedTo->nodeType() == AltaCore::DET::NodeType::Variable && info->narrowedTo->name == "this") {
