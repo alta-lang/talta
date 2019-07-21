@@ -424,10 +424,13 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
       auto def = "_ALTA_OPTIONAL_" + name.substr(15);
       target.insertPreprocessorConditional("!defined(" + def + ")");
       target.insertPreprocessorDefinition(def);
-      target.insertStructureDefinition("_struct_" + name, {
+      std::vector<std::pair<std::string, std::shared_ptr<CAST::Type>>> members = {
         {"present", source.createType("_Alta_bool")},
-        {"target", transpileType(other.get())},
-      });
+      };
+      if (!(*other == DET::Type(DET::NativeType::Void))) {
+        members.push_back({"target", transpileType(other.get())});
+      }
+      target.insertStructureDefinition("_struct_" + name, members);
       target.insertTypeDefinition(name, target.createType("_struct_" + name, {}, true));
       target.insertFunctionDefinition("_Alta_copy_" + name, {
         {"source", transpileType(type.get())},
