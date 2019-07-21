@@ -2130,8 +2130,82 @@ auto Talta::CTranspiler::transpileFunctionCallExpression(Coroutine& co) -> Corou
     } else {
       result = source.createFunctionCall(co.result<CExpression>(), args);
     }
-    for (size_t i = 0; i < refLevel; i++) {
-      result = source.createDereference(result);
+    if (call->maybe) {
+      auto optionalType = info->targetType->returnType->makeOptional();
+      auto idxName = mangleName(currentScope.get()) + "_temp_var_" + std::to_string(tempVarIDs[currentScope->id]++);
+      source.insertVariableDefinition(
+        source.createType("size_t"),
+        idxName,
+        source.createAccessor(
+          source.createAccessor(
+            source.createFetch("_Alta_global_runtime"),
+            "lastError"
+          ),
+          "handlerStackSize"
+        )
+      );
+      auto tmpName = mangleName(currentScope.get()) + "_temp_var_" + std::to_string(tempVarIDs[currentScope->id]++);
+      source.insertVariableDefinition(
+        transpileType(optionalType.get()),
+        tmpName
+      );
+      auto bufName = mangleName(currentScope.get()) + "_temp_var_" + std::to_string(tempVarIDs[currentScope->id]++);
+      source.insertVariableDefinition(
+        source.createType("jmp_buf", { { CAST::TypeModifierFlag::Pointer } }),
+        bufName,
+        source.createFunctionCall(
+          source.createFetch("_Alta_push_error_handler"),
+          {
+            source.createStringLiteral(""),
+          }
+        )
+      );
+      source.insertConditionalStatement(
+        source.createFunctionCall(
+          source.createFetch("setjmp"),
+          {
+            source.createDereference(
+              source.createFetch(bufName)
+            ),
+          }
+        )
+      );
+      source.insertBlock();
+      source.insertExpressionStatement(
+        source.createAssignment(
+          source.createFetch(tmpName),
+          source.createFunctionCall(
+            source.createFetch("_Alta_make_empty_" + cTypeNameify(optionalType.get())),
+            {}
+          )
+        )
+      );
+      source.exitInsertionPoint();
+      source.enterConditionalUltimatum();
+      source.insertBlock();
+      source.insertExpressionStatement(
+        source.createAssignment(
+          source.createFetch(tmpName),
+          source.createFunctionCall(
+            source.createFetch("_Alta_make_" + cTypeNameify(optionalType.get())),
+            {
+              result,
+            }
+          )
+        )
+      );
+      source.exitInsertionPoint();
+      source.exitInsertionPoint();
+      source.insertExpressionStatement(
+        source.createFunctionCall(source.createFetch("_Alta_reset_error"), {
+          source.createFetch(idxName),
+        })
+      );
+      result = source.createFetch(tmpName);
+    } else {
+      for (size_t i = 0; i < refLevel; i++) {
+        result = source.createDereference(result);
+      }
     }
     return co.finalYield(result);
   }
@@ -4131,20 +4205,38 @@ auto Talta::CTranspiler::transpileThrowStatement(Coroutine& co) -> Coroutine& {
 
     source.insertConditionalStatement(
       source.createBinaryOperation(
-        CAST::OperatorType::EqualTo,
-        source.createFunctionCall(
-          source.createFetch("strcmp"),
-          {
-            source.createAccessor(
-              source.createDereference(
-                source.createFetch(tmpName)
+        CAST::OperatorType::Or,
+        source.createBinaryOperation(
+          CAST::OperatorType::EqualTo,
+          source.createFunctionCall(
+            source.createFetch("strcmp"),
+            {
+              source.createAccessor(
+                source.createDereference(
+                  source.createFetch(tmpName)
+                ),
+                "typeName"
               ),
-              "typeName"
-            ),
-            source.createStringLiteral(mangleType(type.get()))
-          }
+              source.createStringLiteral(mangleType(type.get()))
+            }
+          ),
+          source.createIntegerLiteral(0)
         ),
-        source.createIntegerLiteral(0)
+        source.createBinaryOperation(
+          CAST::OperatorType::EqualTo,
+          source.createFunctionCall(
+            source.createFetch("strlen"),
+            {
+              source.createAccessor(
+                source.createDereference(
+                  source.createFetch(tmpName)
+                ),
+                "typeName"
+              ),
+            }
+          ),
+          source.createIntegerLiteral(0)
+        )
       )
     );
     source.insertBlock();
@@ -4364,6 +4456,17 @@ auto Talta::CTranspiler::transpileThrowStatement(Coroutine& co) -> Coroutine& {
 
     source.exitInsertionPoint();
     source.exitInsertionPoint();
+
+    // if it gets here, the error wasn't caught
+    source.insertExpressionStatement(
+      source.createFunctionCall(
+        source.createFetch("_Alta_uncaught_error"),
+        {
+          source.createStringLiteral(mangleType(type.get())),
+        }
+      )
+    );
+
     return co.finalYield();
   }
 };
