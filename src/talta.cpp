@@ -134,7 +134,9 @@ std::vector<std::shared_ptr<Ceetah::AST::Expression>> Talta::CTranspiler::proces
 
 std::string Talta::cTypeNameify(AltaCore::DET::Type* type, bool mangled) {
   using NT = AltaCore::DET::NativeType;
-  if (type->isFunction) {
+  if (type->isOptional) {
+    return "_Alta_optional_" + mangleType(type->optionalTarget.get());
+  } if (type->isFunction) {
     std::string result = "_Alta_func_ptr_" + mangleType(type->returnType.get());
     for (auto& [name, param, isVariable, id]: type->parameters) {
       result += '_';
@@ -415,7 +417,67 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
     auto name = cTypeNameify(type.get());
     auto mods = convertTypeModifiers(type->modifiers);
 
-    if (type->isFunction) {
+    if (type->isOptional) {
+      auto other = type->optionalTarget;
+      hoist(other, inHeader);
+
+      auto def = "_ALTA_OPTIONAL_" + name.substr(15);
+      target.insertPreprocessorConditional("!defined(" + def + ")");
+      target.insertPreprocessorDefinition(def);
+      target.insertStructureDefinition("_struct_" + name, {
+        {"present", source.createType("_Alta_bool")},
+        {"target", transpileType(other.get())},
+      });
+      target.insertTypeDefinition(name, target.createType("_struct_" + name, {}, true));
+      target.insertFunctionDefinition("_Alta_copy_" + name, {
+        {"source", transpileType(type.get())},
+      }, transpileType(type.get()), true);
+      bool didCopy = false;
+      auto copied = doCopyCtor(source.createAccessor("source", "target"), other, &didCopy);
+      if (didCopy) {
+        target.insertConditionalStatement(
+          target.createAccessor("source", "present")
+        );
+        target.insertBlock();
+        
+        target.insertExpressionStatement(
+          target.createAssignment(
+            target.createFetch("source"),
+            copied
+          )
+        );
+
+        target.exitInsertionPoint();
+        target.exitInsertionPoint();
+      }
+      target.insertReturnDirective(target.createFetch("source"));
+      target.exitInsertionPoint();
+
+      target.insertFunctionDefinition("_Alta_make_" + name, {
+        {"source", transpileType(other.get())},
+      }, transpileType(type.get()), true);
+      target.insertVariableDefinition(transpileType(type.get()), "result", target.createArrayLiteral({ target.createIntegerLiteral(0) }));
+      target.insertExpressionStatement(
+        target.createAssignment(
+          target.createAccessor("result", "present"),
+          target.createFetch("_Alta_bool_true")
+        )
+      );
+      target.insertExpressionStatement(
+        target.createAssignment(
+          target.createAccessor("result", "target"),
+          target.createFetch("source")
+        )
+      );
+      target.insertReturnDirective(source.createFetch("result"));
+      target.exitInsertionPoint();
+
+      target.insertFunctionDefinition("_Alta_make_empty_" + name, {}, transpileType(type.get()), true);
+      target.insertReturnDirective(target.createArrayLiteral({ target.createIntegerLiteral(0) }, transpileType(type.get())));
+      target.exitInsertionPoint();
+
+      target.exitInsertionPoint();
+    } if (type->isFunction) {
       auto def = "_ALTA_FUNC_PTR_" + name.substr(15);
       target.insertPreprocessorConditional("!defined(" + def + ")");
       target.insertPreprocessorDefinition(def);
@@ -1001,6 +1063,16 @@ auto Talta::CTranspiler::tmpify(Coroutine& co) -> Coroutine& {
 };
 
 std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::cast(std::shared_ptr<Ceetah::AST::Expression> expr, std::shared_ptr<AltaCore::DET::Type> exprType, std::shared_ptr<AltaCore::DET::Type> dest, bool copy, bool additionalCopyInfo) {
+  if (
+    *dest == DET::Type(DET::NativeType::Bool) &&
+    exprType->pointerLevel() < 1 &&
+    exprType->isOptional
+  ) {
+    return source.createAccessor(expr, "present");
+  }
+  if (dest->isOptional && dest->pointerLevel() < 1 && exprType->isAny && exprType->pointerLevel() == 1) {
+    return source.createFunctionCall(source.createFetch("_Alta_make_empty_" + cTypeNameify(dest.get())), {});
+  }
   bool didRetrieval = false;
   bool didChildRetrieval = false;
   bool didCopy = false;
@@ -1143,15 +1215,20 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::cast(std::shared_pt
     );
     expr = cast(expr, exprType->unionOf[mostCompatibleIndex], dest, copy, true);
   } else if (!didRetrieval && dest->indirectionLevel() < 1 && !dest->isNative) {
-    if (exprType->klass->id == dest->klass->id) {
+    if (dest->klass && exprType->klass && exprType->klass->id == dest->klass->id) {
       // do nothing
     } else {
       throw std::runtime_error("can't cast a plain class to another class");
     }
   } else if ((didRetrieval && dest->indirectionLevel() < 1) || (didChildRetrieval && dest->indirectionLevel() < 1)) {
     // do nothing
-  } else if (!didRetrieval && !didChildRetrieval && !dest->isAny) {
+  } else if (!didRetrieval && !didChildRetrieval && !dest->isAny && !dest->isOptional) {
     expr = source.createCast(expr, transpileType(dest.get()));
+  }
+  if (dest->isOptional && dest->indirectionLevel() < 1 && !exprType->isOptional) {
+    expr = source.createFunctionCall(source.createFetch("_Alta_make_" + cTypeNameify(dest.get())), {
+      cast(expr, exprType, dest->optionalTarget),
+    });
   }
   for (size_t i = dest->referenceLevel(); i > 0; i--) {
     expr = source.createDereference(expr);
@@ -2090,10 +2167,13 @@ auto Talta::CTranspiler::transpileConditionalStatement(Coroutine& co) -> Corouti
   auto [node, _info] = co.arguments();
   auto cond = std::dynamic_pointer_cast<AAST::ConditionalStatement>(node);
   auto info = std::dynamic_pointer_cast<DH::ConditionalStatement>(_info);
+  auto boolType = std::make_shared<DET::Type>(DET::NativeType::Bool);
   if (co.iteration() == 0) {
     return co.await(boundTranspile, cond->primaryTest, info->primaryTest);
   } else if (co.iteration() == 1) {
-    source.insertConditionalStatement(co.result<CExpression>());
+    source.insertConditionalStatement(
+      cast(co.result<CExpression>(), DET::Type::getUnderlyingType(info->primaryTest.get()), boolType)
+    );
     bool doBlock = cond->primaryResult->nodeType() != AltaNodeType::BlockNode;
     if (doBlock) {
       source.insertBlock();
@@ -2150,7 +2230,9 @@ auto Talta::CTranspiler::transpileConditionalStatement(Coroutine& co) -> Corouti
         co.save(i, true, false);
         return co.await(boundTranspile, altTest, testInfo);
       } else if (!transpiledBlock) {
-        source.insertConditionalStatement(co.result<CExpression>());
+        source.insertConditionalStatement(
+          cast(co.result<CExpression>(), DET::Type::getUnderlyingType(testInfo.get()), boolType)
+        );
         bool doBlock = altResult->nodeType() != AltaNodeType::BlockNode;
         if (doBlock) {
           source.insertBlock();
@@ -2186,7 +2268,11 @@ auto Talta::CTranspiler::transpileConditionalExpression(Coroutine& co) -> Corout
   } else {
     auto [condition, primary] = co.load<CExpression, CExpression>();
     auto secondary = co.result<CExpression>();
-    CExpression result = source.createTernaryOperation(condition, primary, secondary);
+    CExpression result = source.createTernaryOperation(
+      cast(condition, DET::Type::getUnderlyingType(info->test.get()), std::make_shared<DET::Type>(DET::NativeType::Bool)),
+      primary,
+      secondary
+    );
     return co.finalYield(result);
   }
 };
@@ -3255,7 +3341,14 @@ auto Talta::CTranspiler::transpileDereferenceExpression(Coroutine& co) -> Corout
   if (co.iteration() == 0) {
     return co.await(boundTranspile, deref->target, info->target);
   } else {
-    CExpression result = source.createDereference(co.result<CExpression>());
+    auto expr = co.result<CExpression>();
+    auto tgtType = DET::Type::getUnderlyingType(info->target.get());
+    CExpression result = nullptr;
+    if (tgtType->isOptional) {
+      result = source.createAccessor(expr, "target");
+    } else {
+      result = source.createDereference(expr);
+    }
     return co.finalYield(result);
   }
 };
@@ -3271,7 +3364,7 @@ auto Talta::CTranspiler::transpileWhileLoopStatement(Coroutine& co) -> Coroutine
     source.insertConditionalStatement(
       source.createUnaryOperation(
         CAST::UOperatorType::Not,
-        co.result<CExpression>()
+        cast(co.result<CExpression>(), DET::Type::getUnderlyingType(info->test.get()), std::make_shared<DET::Type>(DET::NativeType::Bool))
       )
     );
     source.insertExpressionStatement(source.createIntegerLiteral("break"));
@@ -3477,7 +3570,7 @@ auto Talta::CTranspiler::transpileForLoopStatement(Coroutine& co) -> Coroutine& 
     source.insertConditionalStatement(
       source.createUnaryOperation(
         CAST::UOperatorType::Not,
-        co.result<CExpression>()
+        cast(co.result<CExpression>(), DET::Type::getUnderlyingType(info->condition.get()), std::make_shared<DET::Type>(DET::NativeType::Bool))
       )
     );
     source.insertExpressionStatement(source.createIntegerLiteral("break"));
