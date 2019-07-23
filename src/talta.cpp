@@ -378,7 +378,7 @@ header.insertPreprocessorInclusion("_ALTA_MODULE_" + mangleName(altaRoot->$modul
 */
 
 std::shared_ptr<Ceetah::AST::Type> Talta::CTranspiler::transpileType(AltaCore::DET::Type* type) {
-  return source.createType(cTypeNameify(type), convertTypeModifiers(type->modifiers), !type->isNative && !type->isUnion() && !type->klass->isTyped);
+  return source.createType(cTypeNameify(type), convertTypeModifiers(type->modifiers), !type->isNative && type->klass && !type->klass->isTyped);
 };
 
 std::vector<uint8_t> Talta::CTranspiler::convertTypeModifiers(std::vector<uint8_t> altaModifiers) {
@@ -427,7 +427,9 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
       target.insertPreprocessorConditional("!defined(" + def + ")");
       target.insertPreprocessorDefinition(def);
       std::vector<std::pair<std::string, std::shared_ptr<CAST::Type>>> members = {
-        {"present", source.createType("_Alta_bool")},
+        {"objectType", target.createType("_Alta_object_type")},
+        {"present", target.createType("_Alta_bool")},
+        {"destructor", target.createType("_Alta_optional_destructor")},
       };
       if (!(*other == DET::Type(DET::NativeType::Void))) {
         members.push_back({"target", transpileType(other.get())});
@@ -436,19 +438,20 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
       target.insertTypeDefinition(name, target.createType("_struct_" + name, {}, true));
 
       target.insertFunctionDefinition("_Alta_copy_" + name, {
-        {"source", transpileType(type.get())},
+        {"self", transpileType(type->point().get())},
       }, transpileType(type.get()), true);
+      target.insertVariableDefinition(transpileType(type.get()), "result", target.createDereference(target.createFetch("self")));
       bool didCopy = false;
-      auto copied = doCopyCtor(source.createAccessor("source", "target"), other, defaultCopyInfo, &didCopy);
+      auto copied = doCopyCtor(target.createAccessor(target.createDereference(target.createFetch("self")), "target"), other, defaultCopyInfo, &didCopy);
       if (didCopy) {
         target.insertConditionalStatement(
-          target.createAccessor("source", "present")
+          target.createAccessor(target.createDereference(target.createFetch("self")), "present")
         );
         target.insertBlock();
         
         target.insertExpressionStatement(
           target.createAssignment(
-            target.createAccessor("source", "target"),
+            target.createAccessor(target.createFetch("result"), "target"),
             copied
           )
         );
@@ -456,32 +459,69 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
         target.exitInsertionPoint();
         target.exitInsertionPoint();
       }
-      target.insertReturnDirective(target.createFetch("source"));
+      target.insertReturnDirective(target.createFetch("result"));
       target.exitInsertionPoint();
 
       target.insertFunctionDefinition("_Alta_destroy_" + name, {
-        {"self", transpileType(type.get())},
+        {"_self", target.createType("_Alta_basic_optional", { { CAST::TypeModifierFlag::Pointer } })},
       }, target.createType("void"), true);
-      bool canDestroy = !other->isNative && other->indirectionLevel() < 1 && other->klass->destructor;
+      target.insertVariableDefinition(
+        transpileType(type->point().get()),
+        "self",
+        target.createCast(
+          target.createFetch("_self"),
+          transpileType(type->point().get())
+        )
+      );
+      bool canDestroy = !other->isNative && other->indirectionLevel() < 1 && (other->isUnion() || other->isOptional || other->klass->destructor);
       if (canDestroy) {
-        target.insertExpressionStatement(
-          target.createFunctionCall(
-            target.createFetch("_d_" + mangleName(other->klass->destructor.get())),
-            {
-              target.createCast(
-                target.createPointer(
-                  target.createAccessor("self", "target")
-                ),
-                target.createType("_Alta_basic_class", { { Ceetah::AST::TypeModifierFlag::Pointer } })
-              ),
-              target.createFetch("_Alta_bool_false"),
-            }
-          )
+        target.insertConditionalStatement(
+          target.createAccessor(target.createDereference(target.createFetch("self")), "present")
         );
+        target.insertBlock();
+
+        auto tgt = target.createAccessor(target.createDereference(target.createFetch("self")), "target");
+        if (other->isUnion()) {
+          target.insertExpressionStatement(
+            target.createFunctionCall(
+              target.createFetch("_destroy_" + mangleType(other.get())),
+              {
+                target.createPointer(tgt),
+              }
+            )
+          );
+        } else if (other->isOptional) {
+          target.insertExpressionStatement(
+            target.createFunctionCall(
+              target.createFetch("_Alta_destroy_" + cTypeNameify(other.get())),
+              {
+                target.createPointer(tgt),
+              }
+            )
+          );
+        } else {
+          target.insertExpressionStatement(
+            target.createFunctionCall(
+              target.createFetch("_d_" + mangleName(other->klass->destructor.get())),
+              {
+                target.createCast(
+                  target.createPointer(
+                    tgt
+                  ),
+                  target.createType("_Alta_basic_class", { { Ceetah::AST::TypeModifierFlag::Pointer } })
+                ),
+                target.createFetch("_Alta_bool_false"),
+              }
+            )
+          );
+        }
+
+        target.exitInsertionPoint();
+        target.exitInsertionPoint();
       }
       target.insertExpressionStatement(
         target.createAssignment(
-          target.createAccessor("self", "present"),
+          target.createAccessor(target.createDereference(target.createFetch("self")), "present"),
           target.createFetch("_Alta_bool_false")
         )
       );
@@ -503,11 +543,36 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
           target.createFetch("source")
         )
       );
-      target.insertReturnDirective(source.createFetch("result"));
+      target.insertExpressionStatement(
+        target.createAssignment(
+          target.createAccessor("result", "objectType"),
+          target.createFetch("_Alta_object_type_optional")
+        )
+      );
+      target.insertExpressionStatement(
+        target.createAssignment(
+          target.createAccessor("result", "destructor"),
+          target.createFetch("_Alta_destroy_" + name)
+        )
+      );
+      target.insertReturnDirective(target.createFetch("result"));
       target.exitInsertionPoint();
 
       target.insertFunctionDefinition("_Alta_make_empty_" + name, {}, transpileType(type.get()), true);
-      target.insertReturnDirective(target.createArrayLiteral({ target.createIntegerLiteral(0) }, transpileType(type.get())));
+      target.insertVariableDefinition(transpileType(type.get()), "result", target.createArrayLiteral({ target.createIntegerLiteral(0) }));
+      target.insertExpressionStatement(
+        target.createAssignment(
+          target.createAccessor("result", "objectType"),
+          target.createFetch("_Alta_object_type_optional")
+        )
+      );
+      target.insertExpressionStatement(
+        target.createAssignment(
+          target.createAccessor("result", "destructor"),
+          target.createFetch("_Alta_destroy_" + name)
+        )
+      );
+      target.insertReturnDirective(target.createFetch("result"));
       target.exitInsertionPoint();
 
       target.exitInsertionPoint();
@@ -544,9 +609,10 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
       }
       uni += "}";
       target.insertStructureDefinition("_s_" + name, {
-        std::make_pair("typeName", target.createType("char", { { Ceetah::AST::TypeModifierFlag::Pointer } })),
-        std::make_pair("destructor", target.createType("_Alta_union_destructor")),
-        std::make_pair("members", target.createType(uni)),
+        {"objectType", target.createType("_Alta_object_type")},
+        {"typeName", target.createType("char", { { Ceetah::AST::TypeModifierFlag::Pointer } })},
+        {"destructor", target.createType("_Alta_union_destructor")},
+        {"members", target.createType(uni)},
       });
       target.insertTypeDefinition(name, target.createType("_s_" + name, mods, true));
       target.insertFunctionDefinition("_copy_" + mangled, {
@@ -623,7 +689,7 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
       }, target.createType("void"), true);
       i = 0;
       for (auto& item: type->unionOf) {
-        bool canDestroy = !item->isNative && item->indirectionLevel() < 1 && item->klass->destructor;
+        bool canDestroy = !item->isNative && item->indirectionLevel() < 1 && (item->isUnion() || item->isOptional || item->klass->destructor);
         if (canDestroy) {
           auto mangledItem = mangleType(item.get());
           auto cmp = target.createBinaryOperation(
@@ -649,28 +715,49 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
             target.insert(cmp);
           }
           ++i;
-          target.insertExpressionStatement(
-            target.createFunctionCall(
-              target.createFetch("_d_" + mangleName(item->klass->destructor.get())),
-              {
-                target.createCast(
-                  target.createPointer(
-                    target.createAccessor(
-                      target.createAccessor(
-                        target.createDereference(
-                          target.createFetch("self")
-                        ),
-                        "members"
-                      ),
-                      "_m_" + mangledItem
-                    )
-                  ),
-                  target.createType("_Alta_basic_class", { { Ceetah::AST::TypeModifierFlag::Pointer } })
-                ),
-                target.createFetch("_Alta_bool_false"),
-              }
-            )
+          auto tgt = target.createAccessor(
+            target.createAccessor(
+              target.createDereference(
+                target.createFetch("self")
+              ),
+              "members"
+            ),
+            "_m_" + mangledItem
           );
+          if (item->isUnion()) {
+            target.insertExpressionStatement(
+              target.createFunctionCall(
+                target.createFetch("_destroy_" + mangleType(item.get())),
+                {
+                  target.createPointer(tgt),
+                }
+              )
+            );
+          } else if (item->isOptional) {
+            target.insertExpressionStatement(
+              target.createFunctionCall(
+                target.createFetch("_Alta_destroy_" + cTypeNameify(item.get())),
+                {
+                  target.createPointer(tgt),
+                }
+              )
+            );
+          } else {
+            target.insertExpressionStatement(
+              target.createFunctionCall(
+                target.createFetch("_d_" + mangleName(item->klass->destructor.get())),
+                {
+                  target.createCast(
+                    target.createPointer(
+                      tgt
+                    ),
+                    target.createType("_Alta_basic_class", { { Ceetah::AST::TypeModifierFlag::Pointer } })
+                  ),
+                  target.createFetch("_Alta_bool_false"),
+                }
+              )
+            );
+          }
         }
       }
       if (i > 0) {
@@ -792,6 +879,15 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::doCopyCtor(std::sha
         }
       );
     } else if (
+      exprType->isOptional
+    ) {
+      retExpr = source.createFunctionCall(
+        source.createFetch("_Alta_copy_" + mangleType(exprType.get())),
+        {
+          source.createPointer(retExpr),
+        }
+      );
+    } else if (
       // make sure we have a copy constructor,
       // otherwise, there's no point in continuing
       exprType->klass->copyConstructor
@@ -836,6 +932,15 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::doCopyCtor(std::sha
         }
       );
     } else if (
+      exprType->isOptional
+    ) {
+      retExpr = source.createFunctionCall(
+        source.createFetch("_Alta_copy_" + mangleType(exprType.get())),
+        {
+          source.createPointer(retExpr),
+        }
+      );
+    } else if (
       // make sure we have a copy constructor,
       // otherwise, there's no point in continuing
       exprType->klass->copyConstructor
@@ -864,6 +969,8 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::doParentRetrieval(s
     !exprType->isUnion() &&
     !targetType->isNative &&
     !targetType->isUnion() &&
+    exprType->klass &&
+    targetType->klass &&
     exprType->klass->id != targetType->klass->id &&
     exprType->klass->hasParent(targetType->klass)
   ) {
@@ -941,6 +1048,8 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::doChildRetrieval(st
     !exprType->isUnion() &&
     !targetType->isNative &&
     !targetType->isUnion() &&
+    exprType->klass &&
+    targetType->klass &&
     exprType->klass->id != targetType->klass->id &&
     targetType->klass->hasParent(exprType->klass)
   ) {
@@ -1068,22 +1177,16 @@ auto Talta::CTranspiler::tmpify(Coroutine& co) -> Coroutine& {
       auto id = tempVarIDs[currentScope->id]++;
       auto tmpName = mangleName(currentScope.get()) + "_temp_var_" + std::to_string(id);
       source.insertVariableDefinition(transpileType(type.get()), tmpName);
-      if (!currentScope->noRuntime && type->klass && !type->klass->isStructure) {
+      if (!currentScope->noRuntime && (!type->klass || (type->klass && !type->klass->isStructure))) {
         source.insertExpressionStatement(
           source.createFunctionCall(
-            source.createFetch(
-              type->isUnion()
-                ? "_Alta_object_stack_push_union"
-                : "_Alta_object_stack_push"
-            ),
+            source.createFetch("_Alta_object_stack_push"),
             {
               source.createPointer(source.createFetch("_Alta_global_runtime.local")),
               source.createCast(
                 source.createPointer(source.createFetch(tmpName)),
                 source.createType(
-                  type->isUnion()
-                    ? "_Alta_basic_union"
-                    : "_Alta_basic_class",
+                  "_Alta_object",
                   { { Ceetah::AST::TypeModifierFlag::Pointer } }
                 )
               ),
@@ -1107,22 +1210,16 @@ auto Talta::CTranspiler::tmpify(CExpression expr, std::shared_ptr<AltaCore::DET:
   auto id = tempVarIDs[currentScope->id]++;
   auto tmpName = mangleName(currentScope.get()) + "_temp_var_" + std::to_string(id);
   source.insertVariableDefinition(transpileType(type.get()), tmpName);
-  if (!currentScope->noRuntime && type->klass && !type->klass->isStructure) {
+  if (!currentScope->noRuntime && (!type->klass || (type->klass && !type->klass->isStructure))) {
     source.insertExpressionStatement(
       source.createFunctionCall(
-        source.createFetch(
-          type->isUnion()
-            ? "_Alta_object_stack_push_union"
-            : "_Alta_object_stack_push"
-        ),
+        source.createFetch("_Alta_object_stack_push"),
         {
           source.createPointer(source.createFetch("_Alta_global_runtime.local")),
           source.createCast(
             source.createPointer(source.createFetch(tmpName)),
             source.createType(
-              type->isUnion()
-                ? "_Alta_basic_union"
-                : "_Alta_basic_class",
+              "_Alta_object",
               { { Ceetah::AST::TypeModifierFlag::Pointer } }
             )
           ),
@@ -1270,6 +1367,13 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::cast(std::shared_pt
           target->createType("_Alta_union_destructor")
         )
       ),
+      target->createAssignment(
+        target->createAccessor(
+          target->createFetch(destTmp),
+          "objectType"
+        ),
+        target->createFetch("_Alta_object_type_union")
+      ),
       target->createFetch(destTmp),
     });
   } else if (exprType->isUnion()) {
@@ -1291,8 +1395,8 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::cast(std::shared_pt
       "_m_" + mangleType(exprType->unionOf[mostCompatibleIndex].get())
     );
     expr = cast(expr, exprType->unionOf[mostCompatibleIndex], dest, copy, std::make_pair(true, false));
-  } else if (!didRetrieval && dest->indirectionLevel() < 1 && !dest->isNative) {
-    if (dest->klass && exprType->klass && exprType->klass->id == dest->klass->id) {
+  } else if (!didRetrieval && dest->indirectionLevel() < 1 && !dest->isNative && dest->klass && exprType->klass) {
+    if (exprType->klass->id == dest->klass->id) {
       // do nothing
     } else {
       throw std::runtime_error("can't cast a plain class to another class");
@@ -1456,13 +1560,9 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
 
       for (size_t i = 0; i < info->function->parameterVariables.size(); i++) {
         auto& var = info->function->parameterVariables[i];
-        if (!var->type->isNative && var->type->indirectionLevel() < 1 && var->type->klass && !var->type->klass->isStructure && !currentScope->noRuntime) {
+        if (!var->type->isNative && var->type->indirectionLevel() < 1 && (!var->type->klass || (var->type->klass && !var->type->klass->isStructure)) && !currentScope->noRuntime) {
           source.insertExpressionStatement(source.createFunctionCall(
-            source.createFetch(
-              var->type->isUnion()
-                ? "_Alta_object_stack_push_union"
-                : "_Alta_object_stack_push"
-            ),
+            source.createFetch("_Alta_object_stack_push"),
             {
               source.createPointer(
                 source.createAccessor(
@@ -1475,9 +1575,7 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
                   source.createFetch(mangleName(var.get()))
                 ),
                 source.createType(
-                  var->type->isUnion()
-                    ? "_Alta_basic_union"
-                    : "_Alta_basic_class",
+                  "_Alta_object",
                   { { CAST::TypeModifierFlag::Pointer } }
                 )
               ),
@@ -1728,21 +1826,15 @@ auto Talta::CTranspiler::transpileVariableDefinitionExpression(Coroutine& co) ->
     } else if (AltaCore::Util::isInFunction(info->variable.get())) {
       // if it is contained in a function, we can return a reference to the newly defined variable
       // and add it to the stack (if it's not native)
-      if (!info->variable->type->isNative && info->variable->type->indirectionLevel() == 0 && info->variable->type->klass && !info->variable->type->klass->isStructure && !currentScope->noRuntime) {
+      if (!info->variable->type->isNative && info->variable->type->indirectionLevel() == 0 && (!info->variable->type->klass || (info->variable->type->klass && !info->variable->type->klass->isStructure)) && !currentScope->noRuntime) {
         source.insertExpressionStatement(source.createFunctionCall(
-          source.createFetch(
-            info->variable->type->isUnion()
-              ? "_Alta_object_stack_push_union"
-              : "_Alta_object_stack_push"
-          ),
+          source.createFetch("_Alta_object_stack_push"),
           {
             source.createPointer(source.createFetch("_Alta_global_runtime.local")),
             source.createCast(
               source.createPointer(source.createFetch(mangledVarName)),
               source.createType(
-                info->variable->type->isUnion()
-                  ? "_Alta_basic_union"
-                  : "_Alta_basic_class",
+                "_Alta_object",
                 { { Ceetah::AST::TypeModifierFlag::Pointer } }
               )
             ),
@@ -1851,22 +1943,16 @@ auto Talta::CTranspiler::transpileAccessor(Coroutine& co) -> Coroutine& {
 
       source.insertVariableDefinition(transpileType(info->readAccessor->returnType.get()), tmpName);
 
-      if (!currentScope->noRuntime && !info->readAccessor->returnType->isNative && info->readAccessor->returnType->indirectionLevel() < 1 && info->readAccessor->returnType->klass && !info->readAccessor->returnType->klass->isStructure) {
+      if (!currentScope->noRuntime && !info->readAccessor->returnType->isNative && info->readAccessor->returnType->indirectionLevel() < 1 && (!info->readAccessor->returnType->klass || (info->readAccessor->returnType->klass && !info->readAccessor->returnType->klass->isStructure))) {
         source.insertExpressionStatement(
           source.createFunctionCall(
-            source.createFetch(
-              info->readAccessor->returnType->isUnion()
-                ? "_Alta_object_stack_push_union"
-                : "_Alta_object_stack_push"
-            ),
+            source.createFetch("_Alta_object_stack_push"),
             {
               source.createPointer(source.createFetch("_Alta_global_runtime.local")),
               source.createCast(
                 source.createPointer(source.createFetch(tmpName)),
                 source.createType(
-                  info->readAccessor->returnType->isUnion()
-                    ? "_Alta_basic_union"
-                    : "_Alta_basic_class",
+                  "_Alta_object",
                   { { Ceetah::AST::TypeModifierFlag::Pointer } }
                 )
               ),
@@ -1979,8 +2065,9 @@ auto Talta::CTranspiler::transpileAssignmentExpression(Coroutine& co) -> Corouti
     auto tgt = co.result<CExpression>();
     auto tgtType = AltaCore::DET::Type::getUnderlyingType(info->target.get());
     auto origTgtType = tgtType;
-    bool canCopy = !tgtType->isNative && tgtType->pointerLevel() < 1 && (!info->strict || tgtType->indirectionLevel() < 1);
-    bool canDestroy = !info->strict && !tgtType->isNative && tgtType->pointerLevel() < 1 && (tgtType->isUnion() || tgtType->klass->destructor);
+    bool isNullopt = tgtType->isOptional && tgtType->pointerLevel() < 1 && assign->value->nodeType() == ANT::NullptrExpression;
+    bool canCopy = !isNullopt && !tgtType->isNative && tgtType->pointerLevel() < 1 && (!info->strict || tgtType->indirectionLevel() < 1);
+    bool canDestroy = !info->strict && !tgtType->isNative && tgtType->pointerLevel() < 1 && (tgtType->isUnion() || tgtType->isOptional || tgtType->klass->destructor);
 
     std::vector<CExpression> exprs;
 
@@ -1998,7 +2085,7 @@ auto Talta::CTranspiler::transpileAssignmentExpression(Coroutine& co) -> Corouti
       tgt = source.createDereference(source.createFetch(tmpName));
     }
 
-    co.save(tgt, tgtType, origTgtType, exprs, canCopy, canDestroy);
+    co.save(tgt, tgtType, origTgtType, exprs, canCopy, canDestroy, isNullopt);
     return co.await(boundTranspile, assign->value, info->value);
   } else {
     auto [
@@ -2007,12 +2094,14 @@ auto Talta::CTranspiler::transpileAssignmentExpression(Coroutine& co) -> Corouti
       origTgtType,
       exprs,
       canCopy,
-      canDestroy
+      canDestroy,
+      isNullopt
     ] = co.load<
       CExpression,
       std::shared_ptr<DET::Type>,
       std::shared_ptr<DET::Type>,
       std::vector<CExpression>,
+      bool,
       bool,
       bool
     >();
@@ -2071,6 +2160,8 @@ auto Talta::CTranspiler::transpileAssignmentExpression(Coroutine& co) -> Corouti
         )
       );
       val = source.createFetch(tmpName);
+    } else if (isNullopt) {
+      val = source.createFunctionCall(source.createFetch("_Alta_make_empty_" + cTypeNameify(tgtType.get())), {});
     }
 
     if (canDestroy) {
@@ -2078,6 +2169,15 @@ auto Talta::CTranspiler::transpileAssignmentExpression(Coroutine& co) -> Corouti
         exprs.push_back(
           source.createFunctionCall(
             source.createFetch("_destroy_" + mangleType(origTgtType.get())),
+            {
+              source.createPointer(tgt),
+            }
+          )
+        );
+      } else if (tgtType->isOptional) {
+        exprs.push_back(
+          source.createFunctionCall(
+            source.createFetch("_Alta_destroy_" + mangleType(origTgtType.get())),
             {
               source.createPointer(tgt),
             }
@@ -2474,6 +2574,7 @@ auto Talta::CTranspiler::transpileClassDefinitionNode(Coroutine& co) -> Coroutin
       headerPredeclaration("_ALTA_CLASS_" + mangledClassName, alwaysImport ? "" : mangledModName, !isGeneric);
 
       std::vector<std::pair<std::string, std::shared_ptr<CAST::Type>>> members;
+      members.emplace_back("objectType", source.createType("_Alta_object_type"));
       members.emplace_back("_Alta_class_info_struct", source.createType("_Alta_class_info"));
       for (auto& parent: info->klass->parents) {
         auto mangledParent = mangleName(parent.get());
@@ -2591,6 +2692,18 @@ auto Talta::CTranspiler::transpileClassDefinitionNode(Coroutine& co) -> Coroutin
         std::make_tuple("_Alta_self", self),
         std::make_tuple("_isSuper", source.createType("_Alta_bool", { { CAST::TypeModifierFlag::Constant } })),
       }, self);
+
+      source.insertExpressionStatement(
+        source.createAssignment(
+          source.createAccessor(
+            source.createDereference(
+              source.createFetch("_Alta_self")
+            ),
+            "objectType"
+          ),
+          source.createFetch("_Alta_object_type_class")
+        )
+      );
 
       auto infoStruct = source.createAccessor(source.createDereference(source.createFetch("_Alta_self")), "_Alta_class_info_struct");
 
@@ -3082,13 +3195,9 @@ auto Talta::CTranspiler::transpileClassSpecialMethodDefinitionStatement(Coroutin
     } else {
       for (size_t i = 0; i < constr->parameterVariables.size(); i++) {
         auto& var = constr->parameterVariables[i];
-        if (!var->type->isNative && var->type->indirectionLevel() < 1 && var->type->klass && !var->type->klass->isStructure && !currentScope->noRuntime) {
+        if (!var->type->isNative && var->type->indirectionLevel() < 1 && (!var->type->klass || (var->type->klass && !var->type->klass->isStructure)) && !currentScope->noRuntime) {
           source.insertExpressionStatement(source.createFunctionCall(
-            source.createFetch(
-              var->type->isUnion()
-                ? "_Alta_object_stack_push_union"
-                : "_Alta_object_stack_push"
-            ),
+            source.createFetch("_Alta_object_stack_push"),
             {
               source.createPointer(
                 source.createAccessor(
@@ -3101,9 +3210,7 @@ auto Talta::CTranspiler::transpileClassSpecialMethodDefinitionStatement(Coroutin
                   source.createFetch(mangleName(var.get()))
                 ),
                 source.createType(
-                  var->type->isUnion()
-                    ? "_Alta_basic_union"
-                    : "_Alta_basic_class",
+                  "_Alta_object",
                   { { CAST::TypeModifierFlag::Pointer } }
                 )
               ),
@@ -3368,7 +3475,7 @@ auto Talta::CTranspiler::transpileClassSpecialMethodDefinitionStatement(Coroutin
               ),
               source.createCast(
                 source.createFetch("_Alta_self"),
-                source.createType("_Alta_basic_class", { { CAST::TypeModifierFlag::Pointer } })
+                source.createType("_Alta_object", { { CAST::TypeModifierFlag::Pointer } })
               ),
             }
           )
@@ -3906,7 +4013,7 @@ auto Talta::CTranspiler::transpileDeleteStatement(Coroutine& co) -> Coroutine& {
   } else {
     auto type = AltaCore::DET::Type::getUnderlyingType(info->target.get());
     auto tgt = co.result<CExpression>();
-    bool canDestroy = !type->isNative && !type->isUnion() && (info->persistent || type->pointerLevel() < 1);
+    bool canDestroy = !type->isNative && (info->persistent || type->pointerLevel() < 1);
 
     if (info->persistent) {
       for (size_t i = 0; i < type->pointerLevel(); i++) {
