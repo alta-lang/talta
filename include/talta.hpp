@@ -197,7 +197,7 @@ namespace Talta {
       std::shared_ptr<Ceetah::AST::Type> transpileType(AltaCore::DET::Type* type);
       void headerPredeclaration(std::string def, std::string mangledModuleName, bool includeAll = true);
       std::vector<uint8_t> convertTypeModifiers(std::vector<uint8_t> altaModifiers);
-      void hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, bool inHeader = false);
+      void hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, bool inHeader = false, bool includeVariables = true);
       std::vector<std::shared_ptr<Ceetah::AST::Expression>> processArgs(std::vector<ALTACORE_VARIANT<std::pair<std::shared_ptr<AltaCore::AST::ExpressionNode>, std::shared_ptr<AltaCore::DH::ExpressionNode>>, std::vector<std::pair<std::shared_ptr<AltaCore::AST::ExpressionNode>, std::shared_ptr<AltaCore::DH::ExpressionNode>>>>> adjustedArguments, std::vector<std::tuple<std::string, std::shared_ptr<AltaCore::DET::Type>, bool, std::string>> func);
       void stackBookkeepingStart(std::shared_ptr<AltaCore::DET::Scope> scope);
       void stackBookkeepingStop(std::shared_ptr<AltaCore::DET::Scope> scope);
@@ -214,16 +214,52 @@ namespace Talta {
         return std::make_pair(
           (
             type != AltaCore::AST::NodeType::ClassInstantiationExpression &&
-            type != AltaCore::AST::NodeType::FunctionCallExpression
+            type != AltaCore::AST::NodeType::FunctionCallExpression &&
+            type != AltaCore::AST::NodeType::LambdaExpression
           ),
           (
             type == AltaCore::AST::NodeType::FunctionCallExpression ||
             type == AltaCore::AST::NodeType::ClassInstantiationExpression ||
-            type == AltaCore::AST::NodeType::ConditionalExpression
+            type == AltaCore::AST::NodeType::ConditionalExpression ||
+            type == AltaCore::AST::NodeType::LambdaExpression
           )
         );
       };
       void includeClassIfNecessary(std::shared_ptr<AltaCore::DET::Type> type);
+      CExpression doDtor(CExpression expr, std::shared_ptr<AltaCore::DET::Type> exprType, bool* didDtor = nullptr);
+      inline bool canDestroy(std::shared_ptr<AltaCore::DET::Type> exprType) const {
+        return (
+          exprType->pointerLevel() < 1 &&
+          (
+            !exprType->isNative &&
+            (
+              exprType->isUnion() ||
+              exprType->isOptional ||
+              exprType->klass->destructor
+            )
+          ) ||
+          (
+            exprType->isFunction &&
+            !exprType->isRawFunction
+          )
+        );
+      };
+      inline bool canPush(std::shared_ptr<AltaCore::DET::Type> exprType) const {
+        return (
+          exprType->indirectionLevel() < 1 &&
+          (
+            !exprType->isNative &&
+            (
+              !exprType->klass ||
+              (exprType->klass && !exprType->klass->isStructure)
+            )
+          ) ||
+          (
+            exprType->isFunction &&
+            !exprType->isRawFunction
+          )
+        );
+      };
 
       // <coroutine-helpers>
       auto bind(const CoroutineMemberFunction function) -> Coroutine::FunctionType;
@@ -281,6 +317,7 @@ namespace Talta {
       Coroutine& transpileCodeLiteralNode(Coroutine& co);
       Coroutine& transpileAttributeStatement(Coroutine& co);
       Coroutine& transpileBitfieldDefinitionNode(Coroutine& co);
+      Coroutine& transpileLambdaExpression(Coroutine& co);
       // </transpilation-methods>
 
       static const ALTACORE_MAP<AltaCore::AST::NodeType, CoroutineMemberFunction> transpilationMethods;
