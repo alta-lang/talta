@@ -773,7 +773,7 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
         {"members", target.createType(uni)},
       });
       target.insertTypeDefinition(name, target.createType("_s_" + name, mods, true));
-      target.insertFunctionDefinition("_copy_" + mangled, {
+      target.insertFunctionDefinition("_copy_" + name, {
         std::make_tuple("other", target.createType(name, { { Ceetah::AST::TypeModifierFlag::Pointer } }))
       }, target.createType(name), true);
       target.insertVariableDefinition(
@@ -842,7 +842,7 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
       target.insertReturnDirective(target.createFetch("result"));
       target.exitInsertionPoint();
 
-      target.insertFunctionDefinition("_destroy_" + mangled, {
+      target.insertFunctionDefinition("_destroy_" + name, {
         std::make_tuple("self", target.createType(name, { { Ceetah::AST::TypeModifierFlag::Pointer } }))
       }, target.createType("void"), true);
       i = 0;
@@ -974,8 +974,6 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::doCopyCtor(std::sha
     *didCopy = false;
   }
   if (
-    // native types are copied by value
-    !exprType->isNative &&
     // pointers are copied by value
     //
     // note that this does not include references,
@@ -990,40 +988,54 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::doCopyCtor(std::sha
     nodeType != ANT::ClassInstantiationExpression &&
     nodeType != ANT::FunctionCallExpression
   ) {
-    if (additionalCopyInfo(nodeType).second && exprType->indirectionLevel() < 1) {
-      retExpr = tmpify(retExpr, exprType);
-    }
-    if (
-      exprType->isUnion()
-    ) {
-      retExpr = source.createFunctionCall(
-        source.createFetch("_copy_" + mangleType(exprType.get())),
-        {
-          source.createPointer(retExpr),
+    if (exprType->isNative) {
+      if (exprType->isFunction && !exprType->isRawFunction) {
+        auto rawCopy = exprType->copy();
+        rawCopy->isRawFunction = true;
+        auto name = "_Alta_function_" + cTypeNameify(rawCopy.get()).substr(15);
+        retExpr = source.createFunctionCall(source.createFetch("_Alta_copy_" + name), {
+          retExpr,
+        });
+        if (didCopy) {
+          *didCopy = true;
         }
-      );
-    } else if (
-      exprType->isOptional
-    ) {
-      retExpr = source.createFunctionCall(
-        source.createFetch("_Alta_copy_" + mangleType(exprType.get())),
-        {
-          source.createPointer(retExpr),
+      }
+    } else {
+      if (additionalCopyInfo(nodeType).second && exprType->indirectionLevel() < 1) {
+        retExpr = tmpify(retExpr, exprType);
+      }
+      if (
+        exprType->isUnion()
+      ) {
+        retExpr = source.createFunctionCall(
+          source.createFetch("_copy_" + cTypeNameify(exprType.get())),
+          {
+            source.createPointer(retExpr),
+          }
+        );
+      } else if (
+        exprType->isOptional
+      ) {
+        retExpr = source.createFunctionCall(
+          source.createFetch("_Alta_copy_" + cTypeNameify(exprType.get())),
+          {
+            source.createPointer(retExpr),
+          }
+        );
+      } else if (
+        // make sure we have a copy constructor,
+        // otherwise, there's no point in continuing
+        exprType->klass->copyConstructor
+      ) {
+        retExpr = source.createFunctionCall(
+          source.createFetch("_cn_" + mangleName(exprType->klass->copyConstructor.get())),
+          {
+            source.createPointer(retExpr),
+          }
+        );
+        if (didCopy) {
+          *didCopy = true;
         }
-      );
-    } else if (
-      // make sure we have a copy constructor,
-      // otherwise, there's no point in continuing
-      exprType->klass->copyConstructor
-    ) {
-      retExpr = source.createFunctionCall(
-        source.createFetch("_cn_" + mangleName(exprType->klass->copyConstructor.get())),
-        {
-          source.createPointer(retExpr),
-        }
-      );
-      if (didCopy) {
-        *didCopy = true;
       }
     }
   }
@@ -1061,7 +1073,7 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::doCopyCtor(std::sha
         exprType->isUnion()
       ) {
         retExpr = source.createFunctionCall(
-          source.createFetch("_copy_" + mangleType(exprType.get())),
+          source.createFetch("_copy_" + cTypeNameify(exprType.get())),
           {
             source.createPointer(retExpr),
           }
@@ -1073,7 +1085,7 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::doCopyCtor(std::sha
         exprType->isOptional
       ) {
         retExpr = source.createFunctionCall(
-          source.createFetch("_Alta_copy_" + mangleType(exprType.get())),
+          source.createFetch("_Alta_copy_" + cTypeNameify(exprType.get())),
           {
             source.createPointer(retExpr),
           }
@@ -1595,14 +1607,14 @@ auto Talta::CTranspiler::doDtor(CExpression expr, std::shared_ptr<AltaCore::DET:
       });
     } else if (exprType->isUnion()) {
       result = source.createFunctionCall(
-        source.createFetch("_destroy_" + mangleType(exprType.get())),
+        source.createFetch("_destroy_" + cTypeNameify(exprType.get())),
         {
           source.createPointer(expr),
         }
       );
     } else if (exprType->isOptional) {
       result = source.createFunctionCall(
-        source.createFetch("_Alta_destroy_" + mangleType(exprType.get())),
+        source.createFetch("_Alta_destroy_" + cTypeNameify(exprType.get())),
         {
           source.createPointer(expr),
         }
@@ -2338,18 +2350,7 @@ auto Talta::CTranspiler::transpileAssignmentExpression(Coroutine& co) -> Corouti
     if (canCopy) {
       auto id = tempVarIDs[info->inputScope->id]++;
       auto tmpName = mangleName(info->inputScope.get()) + "_temp_var_" + std::to_string(id);
-      if (tgtType->isUnion()) {
-        val = cast(val, exprType, origTgtType, true, additionalCopyInfo(assign->value->nodeType()));
-      } else {
-        if (additionalCopyInfo(assign->value->nodeType()).second && exprType->indirectionLevel() < 1) {
-          val = tmpify(val, exprType);
-        }
-        if (didRetrieval) {
-          val = doCopyCtor(val, tgtType, defaultCopyInfo);
-        } else {
-          val = doCopyCtor(expr, assign->value, info->value);
-        }
-      }
+      val = cast(val, exprType, origTgtType, true, additionalCopyInfo(assign->value->nodeType()));
       source.insertVariableDefinition(
         transpileType(
           tgtType->isUnion()
