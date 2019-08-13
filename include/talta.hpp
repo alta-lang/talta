@@ -188,6 +188,10 @@ namespace Talta {
       using CoroutineManager = Talta::Helpers::CoroutineManager<std::shared_ptr<AltaCore::AST::Node>, std::shared_ptr<AltaCore::DH::Node>>;
       using CoroutineMemberFunction = Coroutine&(CTranspiler::*)(Coroutine&);
       using CExpression = std::shared_ptr<Ceetah::AST::Expression>;
+      /**
+       * 1 = whether it requires copying
+       * 2 = whether it needs to be temp-ified
+       */
       using CopyInfo = std::pair<bool, bool>;
 
       static const CopyInfo defaultCopyInfo;
@@ -209,19 +213,35 @@ namespace Talta {
       void insertExportDefinition(std::string def);
       void saveExportDefinitions(bool inHeader = true);
       void restoreExportDefinitions(bool inHeader = true);
-      std::shared_ptr<Ceetah::AST::Expression> cast(std::shared_ptr<Ceetah::AST::Expression> expr, std::shared_ptr<AltaCore::DET::Type> source, std::shared_ptr<AltaCore::DET::Type> dest, bool copy = false, CopyInfo additionalCopyInfo = defaultCopyInfo);
-      inline CopyInfo additionalCopyInfo(AltaCore::AST::NodeType type) const {
+      std::shared_ptr<Ceetah::AST::Expression> cast(std::shared_ptr<Ceetah::AST::Expression> expr, std::shared_ptr<AltaCore::DET::Type> source, std::shared_ptr<AltaCore::DET::Type> dest, bool copy, CopyInfo additionalCopyInfo, bool manual = false);
+      inline CopyInfo additionalCopyInfo(std::shared_ptr<AltaCore::AST::Node> node, std::shared_ptr<AltaCore::DH::Node> info) const {
+        using ANT = AltaCore::AST::NodeType;
+        namespace AAST = AltaCore::AST;
+        namespace DH = AltaCore::DH;
+
+        ANT type = node->nodeType();
+        bool canCopy = true;
+        bool canTempify = false;
+        if (type == ANT::CastExpression) {
+          auto cast = std::dynamic_pointer_cast<AAST::CastExpression>(node);
+          auto det = std::dynamic_pointer_cast<DH::CastExpression>(info);
+
+          canTempify = det->fromCaster || det->toCaster;
+          canCopy = !canTempify;
+        }
         return std::make_pair(
           (
-            type != AltaCore::AST::NodeType::ClassInstantiationExpression &&
-            type != AltaCore::AST::NodeType::FunctionCallExpression &&
-            type != AltaCore::AST::NodeType::LambdaExpression
+            type != ANT::ClassInstantiationExpression &&
+            type != ANT::FunctionCallExpression &&
+            type != ANT::LambdaExpression &&
+            canCopy
           ),
           (
-            type == AltaCore::AST::NodeType::FunctionCallExpression ||
-            type == AltaCore::AST::NodeType::ClassInstantiationExpression ||
-            type == AltaCore::AST::NodeType::ConditionalExpression ||
-            type == AltaCore::AST::NodeType::LambdaExpression
+            type == ANT::FunctionCallExpression ||
+            type == ANT::ClassInstantiationExpression ||
+            type == ANT::ConditionalExpression ||
+            type == ANT::LambdaExpression ||
+            canTempify
           )
         );
       };
@@ -264,7 +284,7 @@ namespace Talta {
       // <coroutine-helpers>
       auto bind(const CoroutineMemberFunction function) -> Coroutine::FunctionType;
       Coroutine& tmpify(Coroutine& co);
-      CExpression tmpify(CExpression expr, std::shared_ptr<AltaCore::DET::Type> type);
+      CExpression tmpify(CExpression expr, std::shared_ptr<AltaCore::DET::Type> type, bool withStack = true);
       // </coroutine-helpers>
 
       // <transpilation-methods>
@@ -318,6 +338,7 @@ namespace Talta {
       Coroutine& transpileAttributeStatement(Coroutine& co);
       Coroutine& transpileBitfieldDefinitionNode(Coroutine& co);
       Coroutine& transpileLambdaExpression(Coroutine& co);
+      Coroutine& transpileSpecialFetchExpression(Coroutine& co);
       // </transpilation-methods>
 
       static const ALTACORE_MAP<AltaCore::AST::NodeType, CoroutineMemberFunction> transpilationMethods;
