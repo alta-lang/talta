@@ -321,11 +321,11 @@ std::string Talta::mangleName(AltaCore::DET::ScopeItem* item, bool fullName) {
 
   if (nodeType == NodeType::Function) {
     auto func = dynamic_cast<DET::Function*>(item);
-    itemName = escapeName(func->name);
+    isLiteral = func->isLiteral;
+    itemName = isLiteral ? func->name : escapeName(func->name);
     for (auto arg: func->genericArguments) {
       itemName += "_2_" + mangleType(arg.get());
     }
-    isLiteral = func->isLiteral;
 
     if (!isLiteral) {
       itemName = escapeName(itemName);
@@ -338,27 +338,27 @@ std::string Talta::mangleName(AltaCore::DET::ScopeItem* item, bool fullName) {
     }
   } else if (nodeType == NodeType::Variable) {
     auto var = dynamic_cast<DET::Variable*>(item);
-    itemName = escapeName(var->name);
+    isLiteral = isLiteral || var->isLiteral;
+    itemName = isLiteral ? var->name : escapeName(var->name);
     if (auto ps = var->parentScope.lock()) {
       if (auto pc = ps->parentClass.lock()) {
         isLiteral = pc->isLiteral;
       }
     }
-    isLiteral = isLiteral || var->isLiteral;
     if (var->isVariable) {
       mangled += "_Alta_array_";
     }
   } else if (nodeType == NodeType::Namespace) {
     auto ns = dynamic_cast<DET::Namespace*>(item);
-    itemName = ns->name;
     isLiteral = false;
+    itemName = isLiteral ? ns->name : escapeName(ns->name);
   } else if (nodeType == NodeType::Class) {
     auto klass = dynamic_cast<DET::Class*>(item);
-    itemName = klass->name;
+    isLiteral = klass->isLiteral;
+    itemName = isLiteral ? klass->name : escapeName(klass->name);
     for (auto arg: klass->genericArguments) {
       itemName += "_2_" + mangleType(arg.get());
     }
-    isLiteral = klass->isLiteral;
   }
 
   if (!isLiteral && fullName) {
