@@ -82,6 +82,7 @@ namespace Talta {
     { ANT::BitfieldDefinitionNode, &CTranspiler::transpileBitfieldDefinitionNode },
     { ANT::LambdaExpression, &CTranspiler::transpileLambdaExpression },
     { ANT::SpecialFetchExpression, &CTranspiler::transpileSpecialFetchExpression },
+    { ANT::ClassOperatorDefinitionStatement, &CTranspiler::transpileClassOperatorDefinitionStatement },
   };
 
   const CTranspiler::CopyInfo CTranspiler::defaultCopyInfo = std::make_pair(false, false);
@@ -320,7 +321,7 @@ std::string Talta::mangleName(AltaCore::DET::ScopeItem* item, bool fullName) {
 
   if (nodeType == NodeType::Function) {
     auto func = dynamic_cast<DET::Function*>(item);
-    itemName = func->name;
+    itemName = escapeName(func->name);
     for (auto arg: func->genericArguments) {
       itemName += "_2_" + mangleType(arg.get());
     }
@@ -337,7 +338,7 @@ std::string Talta::mangleName(AltaCore::DET::ScopeItem* item, bool fullName) {
     }
   } else if (nodeType == NodeType::Variable) {
     auto var = dynamic_cast<DET::Variable*>(item);
-    itemName = var->name;
+    itemName = escapeName(var->name);
     if (auto ps = var->parentScope.lock()) {
       if (auto pc = ps->parentClass.lock()) {
         isLiteral = pc->isLiteral;
@@ -2600,11 +2601,32 @@ auto Talta::CTranspiler::transpileBinaryOperation(Coroutine& co) -> Coroutine& {
   } else {
     auto [left] = co.load<CExpression>();
     auto right = co.result<CExpression>();
-    // for now, we can just cast from one to the other, since they're
-    // identical. however, if Alta ever introduces non-C binary operators,
-    // or changes up the order of its OperatorType enum, this
-    // will need to be changed. please take note of that!
-    CExpression expr = source.createBinaryOperation((CAST::OperatorType)binOp->type, left, right);
+
+    CExpression expr = nullptr;
+
+    if (info->operatorMethod) {
+      bool isLeft = info->operatorMethod->orientation == AltaCore::Shared::ClassOperatorOrientation::Left;
+      auto instance = isLeft ? left : right;
+      if (!additionalCopyInfo(isLeft ? binOp->left : binOp->right, isLeft ? info->left : info->right).first) {
+        instance = tmpify(instance, info->leftType);
+      }
+      auto argument = cast(isLeft ? right : left, isLeft ? info->rightType : info->leftType, info->operatorMethod->parameterVariables.front()->type, false, additionalCopyInfo(isLeft ? binOp->right : binOp->left, isLeft ? info->right : info->left), false);
+      expr = source.createFunctionCall(source.createFetch(mangleName(info->operatorMethod.get())), {
+        source.createPointer(instance),
+        argument,
+      });
+    } else {
+      // for now, we can just cast from one to the other, since they're
+      // identical. however, if Alta ever introduces non-C binary operators,
+      // or changes up the order of its OperatorType enum, this
+      // will need to be changed. please take note of that!
+      expr = source.createBinaryOperation(
+        (CAST::OperatorType)binOp->type,
+        cast(left, info->leftType, info->commonOperandType, false, additionalCopyInfo(binOp->left, info->left), false),
+        cast(right, info->rightType, info->commonOperandType, false, additionalCopyInfo(binOp->right, info->right), false)
+      );
+    }
+
     return co.finalYield(expr);
   }
 };
@@ -4369,14 +4391,27 @@ auto Talta::CTranspiler::transpileUnaryOperation(Coroutine& co) -> Coroutine& {
     return co.await(boundTranspile, op->target, info->target);
   } else {
     auto expr = co.result<CExpression>();
-    if (op->type == AAST::UOperatorType::Not) {
-      expr = cast(expr, DET::Type::getUnderlyingType(info->target.get()), std::make_shared<DET::Type>(DET::NativeType::Bool), false, additionalCopyInfo(op->target, info->target));
+    CExpression result = nullptr;
+
+    if (info->operatorMethod) {
+      if (!additionalCopyInfo(op->target, info->target).first) {
+        expr = tmpify(expr, info->targetType);
+      }
+      result = source.createFunctionCall(source.createFetch(mangleName(info->operatorMethod.get())), {
+        source.createPointer(expr),
+      });
+    } else {
+      if (op->type == AAST::UOperatorType::Not) {
+        expr = cast(expr, DET::Type::getUnderlyingType(info->target.get()), std::make_shared<DET::Type>(DET::NativeType::Bool), false, additionalCopyInfo(op->target, info->target));
+      }
+
+      result = source.createUnaryOperation(
+        (CAST::UOperatorType)op->type,
+        expr,
+        op->type == AAST::UOperatorType::PostIncrement || op->type == AAST::UOperatorType::PostDecrement
+      );
     }
-    CExpression result = source.createUnaryOperation(
-      (CAST::UOperatorType)op->type,
-      expr,
-      op->type == AAST::UOperatorType::PostIncrement || op->type == AAST::UOperatorType::PostDecrement
-    );
+
     return co.finalYield(result);
   }
 };
@@ -5698,6 +5733,91 @@ auto Talta::CTranspiler::transpileSpecialFetchExpression(Coroutine& co) -> Corou
 
   CExpression expr = source.createFetch(mangleName(info->items[0].get()));
   return co.finalYield(expr);
+};
+auto Talta::CTranspiler::transpileClassOperatorDefinitionStatement(Coroutine& co) -> Coroutine& {
+  auto [node, _info] = co.arguments();
+  auto op = std::dynamic_pointer_cast<AAST::ClassOperatorDefinitionStatement>(node);
+  auto info = std::dynamic_pointer_cast<DH::ClassOperatorDefinitionStatement>(_info);
+
+  if (co.iteration() == 0) {
+    auto mangledFuncName = mangleName(info->method.get());
+
+    std::vector<std::tuple<std::string, std::shared_ptr<CAST::Type>>> cParams;
+
+    cParams.push_back(std::make_tuple("_Alta_self", transpileType(info->method->parentClassType.get())));
+
+    if (info->method->orientation != AltaCore::Shared::ClassOperatorOrientation::Unary) {
+      auto& param = info->method->parameterVariables.front();
+      cParams.push_back(std::make_tuple(mangleName(param.get()), transpileType(param->type.get())));
+    }
+
+    auto returnType = transpileType(info->method->returnType.get());
+
+    bool targetIsHeader = true;
+
+    if (!targetIsHeader) {
+      for (auto& hoistedType: info->method->publicHoistedItems) {
+        hoist(hoistedType, false);
+      }
+    }
+    for (auto& hoistedType: info->method->privateHoistedItems) {
+      hoist(hoistedType, false);
+    }
+
+    if (targetIsHeader) {
+      auto mod = AltaCore::Util::getModule(info->method->parentScope.lock().get()).lock();
+      auto mangledModName = mangleName(mod.get());
+      headerPredeclaration("_ALTA_FUNCTION_" + mangledFuncName, mangledModName, true);
+      for (auto arg: info->method->genericArguments) {
+        hoist(arg, true);
+      }
+      for (auto& hoistedType: info->method->publicHoistedItems) {
+        hoist(hoistedType, true);
+      }
+      hoist(info->method->returnType, true);
+      header.insertFunctionDeclaration(mangledFuncName, cParams, returnType);
+      header.exitInsertionPoint();
+    }
+
+    source.insertFunctionDefinition(mangledFuncName, cParams, returnType);
+
+    stackBookkeepingStart(info->method->scope);
+
+    for (size_t i = 0; i < info->method->parameterVariables.size(); i++) {
+      auto& var = info->method->parameterVariables[i];
+      if (!currentScope->noRuntime && canPush(var->type)) {
+        source.insertExpressionStatement(source.createFunctionCall(
+          source.createFetch("_Alta_object_stack_push"),
+          {
+            source.createPointer(
+              source.createAccessor(
+                source.createFetch("_Alta_global_runtime"),
+                "local"
+              )
+            ),
+            source.createCast(
+              source.createPointer(
+                source.createFetch(mangleName(var.get()))
+              ),
+              source.createType(
+                "_Alta_object",
+                { { CAST::TypeModifierFlag::Pointer } }
+              )
+            ),
+          }
+        ));
+      }
+    }
+
+    return co.yield();
+  } else if (co.iteration() - 1 < op->block->statements.size()) {
+    auto i = co.iteration() - 1;
+    return co.await(boundTranspile, op->block->statements[i], info->block->statements[i]);
+  } else {
+    stackBookkeepingStop(info->method->scope);
+    source.exitInsertionPoint();
+    return co.finalYield();
+  }
 };
 // </transpilation-coroutines>
 

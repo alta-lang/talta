@@ -229,6 +229,20 @@ namespace Talta {
           canTempify = det->fromCaster || det->toCaster;
           canCopy = !canTempify;
         }
+        if (type == ANT::BinaryOperation) {
+          auto op = std::dynamic_pointer_cast<AAST::BinaryOperation>(node);
+          auto det = std::dynamic_pointer_cast<DH::BinaryOperation>(info);
+
+          canCopy = !det->operatorMethod;
+          canTempify = !canCopy;
+        }
+        if (type == ANT::UnaryOperation) {
+          auto op = std::dynamic_pointer_cast<AAST::UnaryOperation>(node);
+          auto det = std::dynamic_pointer_cast<DH::UnaryOperation>(info);
+
+          canCopy = !det->operatorMethod;
+          canTempify = !canCopy;
+        }
         return std::make_pair(
           (
             type != ANT::ClassInstantiationExpression &&
@@ -339,6 +353,7 @@ namespace Talta {
       Coroutine& transpileBitfieldDefinitionNode(Coroutine& co);
       Coroutine& transpileLambdaExpression(Coroutine& co);
       Coroutine& transpileSpecialFetchExpression(Coroutine& co);
+      Coroutine& transpileClassOperatorDefinitionStatement(Coroutine& co);
       // </transpilation-methods>
 
       static const ALTACORE_MAP<AltaCore::AST::NodeType, CoroutineMemberFunction> transpilationMethods;
