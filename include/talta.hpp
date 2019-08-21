@@ -294,6 +294,17 @@ namespace Talta {
           )
         );
       };
+      inline std::shared_ptr<Ceetah::InsertionPoint> popToGlobal() {
+        auto point = source.insertionPoint;
+        while (source.insertionPoint->node->nodeType() != Ceetah::AST::NodeType::RootNode) {
+          source.insertionPoint = source.insertionPoint->parent;
+        }
+        source.insertionPoint->moveBackward();
+        return point;
+      };
+      inline void pushFromGlobal(std::shared_ptr<Ceetah::InsertionPoint> point) {
+        source.insertionPoint = point;
+      };
 
       // <coroutine-helpers>
       auto bind(const CoroutineMemberFunction function) -> Coroutine::FunctionType;

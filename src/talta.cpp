@@ -1658,6 +1658,10 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::cast(std::shared_pt
         copy = false;
       }
     } else if (component.type == CCT::From) {
+      auto state = popToGlobal();
+      hoist(component.method, false);
+      pushFromGlobal(state);
+
       ref();
       result = source.createFunctionCall(source.createFetch(mangleName(component.method.get())), {
         result,
@@ -1666,6 +1670,10 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::cast(std::shared_pt
       additionalCopyInfo = std::make_pair(false, true);
       currentType = std::make_shared<DET::Type>(component.method->parentScope.lock()->parentClass.lock());
     } else if (component.type == CCT::To) {
+      auto state = popToGlobal();
+      hoist(component.method, false);
+      pushFromGlobal(state);
+
       auto to = component.method;
       auto classType = std::make_shared<DET::Type>(component.method->parentScope.lock()->parentClass.lock());
       if (additionalCopyInfo.second) {
