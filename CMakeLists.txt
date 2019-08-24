@@ -2,6 +2,14 @@ cmake_minimum_required(VERSION 3.10)
 
 project(talta)
 
+# don't treat warnings as errors
+# why is this even default behavior in the first place?
+# cmake, stop. just stop.
+string(REPLACE " -Werror" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+string(REPLACE " /WX" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+string(REPLACE " -Werror" "" CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
+string(REPLACE " /WX" "" CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
+
 add_subdirectory("${PROJECT_SOURCE_DIR}/deps/alta-core")
 add_subdirectory("${PROJECT_SOURCE_DIR}/deps/ceetah")
 
