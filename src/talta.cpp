@@ -2565,13 +2565,14 @@ auto Talta::CTranspiler::transpileAssignmentExpression(Coroutine& co) -> Corouti
     bool didRetrieval = false;
     auto exprType = AltaCore::DET::Type::getUnderlyingType(info->value.get());
     auto val = tgtType->isUnion() ? expr : doParentRetrieval(expr, exprType, tgtType, &didRetrieval);
+    auto valTargetType = info->operatorMethod ? info->operatorMethod->parameterVariables.front()->type : origTgtType->destroyReferences();
 
     if (canCopy) {
       auto id = tempVarIDs[info->inputScope->id]++;
       auto tmpName = mangleName(info->inputScope.get()) + "_temp_var_" + std::to_string(id);
-      val = cast(val, exprType, origTgtType->destroyReferences(), true, additionalCopyInfo(assign->value, info->value));
+      val = cast(val, exprType, valTargetType, true, additionalCopyInfo(assign->value, info->value));
       source.insertVariableDefinition(
-        transpileType(origTgtType->deconstify().get()),
+        transpileType((info->operatorMethod ? valTargetType : origTgtType)->deconstify().get()),
         tmpName
       );
       exprs.push_back(
@@ -2602,7 +2603,9 @@ auto Talta::CTranspiler::transpileAssignmentExpression(Coroutine& co) -> Corouti
       CExpression opCall = source.createFunctionCall(
         source.createFetch(mangleName(info->operatorMethod.get())),
         {
-          source.createPointer(tgt),
+          source.createPointer(
+            cast(tgt, tgtType, info->operatorMethod->parentClassType, false, additionalCopyInfo(assign->target, info->target), false)
+          ),
           val,
         }
       );
@@ -2654,12 +2657,17 @@ auto Talta::CTranspiler::transpileBinaryOperation(Coroutine& co) -> Coroutine& {
     if (info->operatorMethod) {
       bool isLeft = info->operatorMethod->orientation == AltaCore::Shared::ClassOperatorOrientation::Left;
       auto instance = isLeft ? left : right;
-      if (!additionalCopyInfo(isLeft ? binOp->left : binOp->right, isLeft ? info->left : info->right).first) {
-        instance = tmpify(instance, info->leftType);
+      auto instanceAlta = isLeft ? binOp->left : binOp->right;
+      auto instanceInfo = isLeft ? info->left : info->right;
+      auto instanceType = isLeft ? info->leftType : info->rightType;
+      if (!additionalCopyInfo(instanceAlta, instanceInfo).first) {
+        instance = tmpify(instance, instanceType);
       }
       auto argument = cast(isLeft ? right : left, isLeft ? info->rightType : info->leftType, info->operatorMethod->parameterVariables.front()->type, false, additionalCopyInfo(isLeft ? binOp->right : binOp->left, isLeft ? info->right : info->left), false);
       expr = source.createFunctionCall(source.createFetch(mangleName(info->operatorMethod.get())), {
-        source.createPointer(instance),
+        source.createPointer(
+          cast(instance, instanceType, info->operatorMethod->parentClassType, false, additionalCopyInfo(instanceAlta, instanceInfo), false)
+        ),
         argument,
       });
       for (size_t i = 0; i < info->operatorMethod->returnType->referenceLevel(); i++) {
@@ -4054,6 +4062,12 @@ auto Talta::CTranspiler::transpileClassSpecialMethodDefinitionStatement(Coroutin
       source.exitInsertionPoint();
 
       if (info->isCastConstructor) {
+        hoist(info->correspondingMethod, true);
+        header.exitInsertionPoint();
+
+        auto mod = AltaCore::Util::getModule(info->correspondingMethod->parentScope.lock().get()).lock();
+        headerPredeclaration(headerMangle(info->correspondingMethod.get()), mangleName(mod.get()));
+
         auto mangledCast = mangleName(info->correspondingMethod.get());
         auto specialParam = info->correspondingMethod->parameterVariables[0];
         header.insertFunctionDeclaration(mangledCast, {
@@ -4269,7 +4283,9 @@ auto Talta::CTranspiler::transpileSubscriptExpression(Coroutine& co) -> Coroutin
       result = source.createFunctionCall(
         source.createFetch(mangleName(info->operatorMethod.get())),
         {
-          source.createPointer(cTarget),
+          source.createPointer(
+            cast(cTarget, info->targetType, info->operatorMethod->parentClassType, false, additionalCopyInfo(subs->target, info->target), false)
+          ),
           cast(cIndex, info->indexType, info->operatorMethod->parameterVariables.front()->type, true, additionalCopyInfo(subs->index, info->index), false),
         }
       );
@@ -4520,7 +4536,9 @@ auto Talta::CTranspiler::transpileUnaryOperation(Coroutine& co) -> Coroutine& {
         expr = tmpify(expr, info->targetType);
       }
       result = source.createFunctionCall(source.createFetch(mangleName(info->operatorMethod.get())), {
-        source.createPointer(expr),
+        source.createPointer(
+          cast(expr, info->targetType, info->operatorMethod->parentClassType, false, additionalCopyInfo(op->target, info->target), false)
+        ),
       });
       for (size_t i = 0; i < info->operatorMethod->returnType->referenceLevel(); i++) {
         result = source.createDereference(result);

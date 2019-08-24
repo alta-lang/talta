@@ -303,6 +303,10 @@ namespace Talta {
         return point;
       };
       inline void pushFromGlobal(std::shared_ptr<Ceetah::InsertionPoint> point) {
+        while (source.insertionPoint->node->nodeType() != Ceetah::AST::NodeType::RootNode) {
+          source.insertionPoint = source.insertionPoint->parent;
+        }
+        source.insertionPoint->moveForward();
         source.insertionPoint = point;
       };
 
