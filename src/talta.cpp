@@ -82,6 +82,7 @@ namespace Talta {
     { ANT::BitfieldDefinitionNode, &CTranspiler::transpileBitfieldDefinitionNode },
     { ANT::LambdaExpression, &CTranspiler::transpileLambdaExpression },
     { ANT::SpecialFetchExpression, &CTranspiler::transpileSpecialFetchExpression },
+    { ANT::ClassOperatorDefinitionStatement, &CTranspiler::transpileClassOperatorDefinitionStatement },
   };
 
   const CTranspiler::CopyInfo CTranspiler::defaultCopyInfo = std::make_pair(false, false);
@@ -320,11 +321,11 @@ std::string Talta::mangleName(AltaCore::DET::ScopeItem* item, bool fullName) {
 
   if (nodeType == NodeType::Function) {
     auto func = dynamic_cast<DET::Function*>(item);
-    itemName = func->name;
+    isLiteral = func->isLiteral;
+    itemName = isLiteral ? func->name : escapeName(func->name);
     for (auto arg: func->genericArguments) {
       itemName += "_2_" + mangleType(arg.get());
     }
-    isLiteral = func->isLiteral;
 
     if (!isLiteral) {
       itemName = escapeName(itemName);
@@ -337,27 +338,27 @@ std::string Talta::mangleName(AltaCore::DET::ScopeItem* item, bool fullName) {
     }
   } else if (nodeType == NodeType::Variable) {
     auto var = dynamic_cast<DET::Variable*>(item);
-    itemName = var->name;
+    isLiteral = isLiteral || var->isLiteral;
+    itemName = isLiteral ? var->name : escapeName(var->name);
     if (auto ps = var->parentScope.lock()) {
       if (auto pc = ps->parentClass.lock()) {
         isLiteral = pc->isLiteral;
       }
     }
-    isLiteral = isLiteral || var->isLiteral;
     if (var->isVariable) {
       mangled += "_Alta_array_";
     }
   } else if (nodeType == NodeType::Namespace) {
     auto ns = dynamic_cast<DET::Namespace*>(item);
-    itemName = ns->name;
     isLiteral = false;
+    itemName = isLiteral ? ns->name : escapeName(ns->name);
   } else if (nodeType == NodeType::Class) {
     auto klass = dynamic_cast<DET::Class*>(item);
-    itemName = klass->name;
+    isLiteral = klass->isLiteral;
+    itemName = isLiteral ? klass->name : escapeName(klass->name);
     for (auto arg: klass->genericArguments) {
       itemName += "_2_" + mangleType(arg.get());
     }
-    isLiteral = klass->isLiteral;
   }
 
   if (!isLiteral && fullName) {
@@ -1657,6 +1658,10 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::cast(std::shared_pt
         copy = false;
       }
     } else if (component.type == CCT::From) {
+      auto state = popToGlobal();
+      hoist(component.method, false);
+      pushFromGlobal(state);
+
       ref();
       result = source.createFunctionCall(source.createFetch(mangleName(component.method.get())), {
         result,
@@ -1665,6 +1670,10 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::cast(std::shared_pt
       additionalCopyInfo = std::make_pair(false, true);
       currentType = std::make_shared<DET::Type>(component.method->parentScope.lock()->parentClass.lock());
     } else if (component.type == CCT::To) {
+      auto state = popToGlobal();
+      hoist(component.method, false);
+      pushFromGlobal(state);
+
       auto to = component.method;
       auto classType = std::make_shared<DET::Type>(component.method->parentScope.lock()->parentClass.lock());
       if (additionalCopyInfo.second) {
@@ -1948,7 +1957,22 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
 
       for (size_t i = 0; i < info->function->parameterVariables.size(); i++) {
         auto& var = info->function->parameterVariables[i];
-        if (!currentScope->noRuntime && canPush(var->type)) {
+        if (
+          !currentScope->noRuntime &&
+          canPush(var->isVariable ? var->type->follow() : var->type)
+        ) {
+          if (var->isVariable) {
+            source.insertBlock();
+            source.insertVariableDefinition(source.createType("size_t"), "_Alta_variable_array_index", source.createIntegerLiteral(0));
+            source.insertWhileLoop(
+              source.createBinaryOperation(
+                CAST::OperatorType::LessThan,
+                source.createFetch("_Alta_variable_array_index"),
+                source.createFetch("_Alta_array_length_" + mangleName(var.get()).substr(12))
+              )
+            );
+            source.insertBlock();
+          }
           source.insertExpressionStatement(source.createFunctionCall(
             source.createFetch("_Alta_object_stack_push"),
             {
@@ -1959,9 +1983,15 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
                 )
               ),
               source.createCast(
-                source.createPointer(
-                  source.createFetch(mangleName(var.get()))
-                ),
+                var->isVariable
+                  ? source.createBinaryOperation(
+                      CAST::OperatorType::Addition,
+                      source.createFetch("_Alta_array_" + mangleName(var.get()).substr(12)),
+                      source.createFetch("_Alta_variable_array_index")
+                    )
+                  : source.createPointer(
+                      source.createFetch(mangleName(var.get()))
+                    ),
                 source.createType(
                   "_Alta_object",
                   { { CAST::TypeModifierFlag::Pointer } }
@@ -1969,6 +1999,17 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
               ),
             }
           ));
+          if (var->isVariable) {
+            source.insertExpressionStatement(
+              source.createUnaryOperation(
+                CAST::UOperatorType::PreIncrement,
+                source.createFetch("_Alta_variable_array_index")
+              )
+            );
+            source.exitInsertionPoint();
+            source.exitInsertionPoint();
+            source.exitInsertionPoint();
+          }
         }
       }
 
@@ -2020,6 +2061,9 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
         auto mangledModName = mangleName(mod.get());
         auto alwaysImport = alwaysImportTable.find(func->id) != alwaysImportTable.end();
         headerPredeclaration("_ALTA_FUNCTION_" + mangledFuncName, alwaysImport ? "" : mangledModName, !isGeneric);
+        if (info->function->isMethod) {
+          hoist(info->function->parentClassType->klass, true);
+        }
         for (auto arg: info->function->genericArguments) {
           hoist(arg, true);
         }
@@ -2455,11 +2499,11 @@ auto Talta::CTranspiler::transpileAssignmentExpression(Coroutine& co) -> Corouti
     return co.await(boundTranspile, assign->target, info->target);
   } else if (co.iteration() == 1) {
     auto tgt = co.result<CExpression>();
-    auto tgtType = AltaCore::DET::Type::getUnderlyingType(info->target.get());
+    auto tgtType = info->targetType;
     auto origTgtType = tgtType;
     bool isNullopt = tgtType->isOptional && tgtType->pointerLevel() < 1 && assign->value->nodeType() == ANT::NullptrExpression;
     bool canCopy = !isNullopt && !tgtType->isNative && tgtType->pointerLevel() < 1 && (!info->strict || tgtType->indirectionLevel() < 1);
-    bool canDestroyVar = !info->strict && canDestroy(tgtType);
+    bool canDestroyVar = !info->operatorMethod && !info->strict && canDestroy(tgtType);
 
     std::vector<CExpression> exprs;
 
@@ -2521,20 +2565,16 @@ auto Talta::CTranspiler::transpileAssignmentExpression(Coroutine& co) -> Corouti
     bool didRetrieval = false;
     auto exprType = AltaCore::DET::Type::getUnderlyingType(info->value.get());
     auto val = tgtType->isUnion() ? expr : doParentRetrieval(expr, exprType, tgtType, &didRetrieval);
+    auto valTargetType = info->operatorMethod ? info->operatorMethod->parameterVariables.front()->type : origTgtType->destroyReferences();
 
     if (canCopy) {
       auto id = tempVarIDs[info->inputScope->id]++;
       auto tmpName = mangleName(info->inputScope.get()) + "_temp_var_" + std::to_string(id);
-      val = cast(val, exprType, origTgtType->destroyReferences(), true, additionalCopyInfo(assign->value, info->value));
+      val = cast(val, exprType, valTargetType, true, additionalCopyInfo(assign->value, info->value));
       source.insertVariableDefinition(
-        transpileType(origTgtType->deconstify().get()),
+        transpileType((info->operatorMethod ? valTargetType : origTgtType)->deconstify().get()),
         tmpName
       );
-      /*
-      for (size_t i = 0; i < origTgtType->referenceLevel(); ++i) {
-        val = source.createPointer(val);
-      }
-      */
       exprs.push_back(
         source.createAssignment(
           source.createFetch(tmpName),
@@ -2542,11 +2582,6 @@ auto Talta::CTranspiler::transpileAssignmentExpression(Coroutine& co) -> Corouti
         )
       );
       val = source.createFetch(tmpName);
-      /*
-      for (size_t i = 0; i < origTgtType->referenceLevel(); ++i) {
-        val = source.createDereference(val);
-      }
-      */
     } else if (isNullopt) {
       val = source.createFunctionCall(source.createFetch("_Alta_make_empty_" + cTypeNameify(tgtType.get())), {});
     }
@@ -2564,13 +2599,29 @@ auto Talta::CTranspiler::transpileAssignmentExpression(Coroutine& co) -> Corouti
       }
     }
 
-    exprs.push_back(
-      source.createAssignment(
-        tgt,
-        val,
-        (CAST::AssignmentType)info->type
-      )
-    );
+    if (info->operatorMethod) {
+      CExpression opCall = source.createFunctionCall(
+        source.createFetch(mangleName(info->operatorMethod.get())),
+        {
+          source.createPointer(
+            cast(tgt, tgtType, info->operatorMethod->parentClassType, false, additionalCopyInfo(assign->target, info->target), false)
+          ),
+          val,
+        }
+      );
+      for (size_t i = 0; i < info->operatorMethod->returnType->referenceLevel(); i++) {
+        opCall = source.createDereference(opCall);
+      }
+      exprs.push_back(opCall);
+    } else {
+      exprs.push_back(
+        source.createAssignment(
+          tgt,
+          val,
+          (CAST::AssignmentType)info->type
+        )
+      );
+    }
 
     CExpression finalExpr = source.createMultiExpression(exprs);
     return co.finalYield(finalExpr);
@@ -2600,11 +2651,40 @@ auto Talta::CTranspiler::transpileBinaryOperation(Coroutine& co) -> Coroutine& {
   } else {
     auto [left] = co.load<CExpression>();
     auto right = co.result<CExpression>();
-    // for now, we can just cast from one to the other, since they're
-    // identical. however, if Alta ever introduces non-C binary operators,
-    // or changes up the order of its OperatorType enum, this
-    // will need to be changed. please take note of that!
-    CExpression expr = source.createBinaryOperation((CAST::OperatorType)binOp->type, left, right);
+
+    CExpression expr = nullptr;
+
+    if (info->operatorMethod) {
+      bool isLeft = info->operatorMethod->orientation == AltaCore::Shared::ClassOperatorOrientation::Left;
+      auto instance = isLeft ? left : right;
+      auto instanceAlta = isLeft ? binOp->left : binOp->right;
+      auto instanceInfo = isLeft ? info->left : info->right;
+      auto instanceType = isLeft ? info->leftType : info->rightType;
+      if (!additionalCopyInfo(instanceAlta, instanceInfo).first) {
+        instance = tmpify(instance, instanceType);
+      }
+      auto argument = cast(isLeft ? right : left, isLeft ? info->rightType : info->leftType, info->operatorMethod->parameterVariables.front()->type, false, additionalCopyInfo(isLeft ? binOp->right : binOp->left, isLeft ? info->right : info->left), false);
+      expr = source.createFunctionCall(source.createFetch(mangleName(info->operatorMethod.get())), {
+        source.createPointer(
+          cast(instance, instanceType, info->operatorMethod->parentClassType, false, additionalCopyInfo(instanceAlta, instanceInfo), false)
+        ),
+        argument,
+      });
+      for (size_t i = 0; i < info->operatorMethod->returnType->referenceLevel(); i++) {
+        expr = source.createDereference(expr);
+      }
+    } else {
+      // for now, we can just cast from one to the other, since they're
+      // identical. however, if Alta ever introduces non-C binary operators,
+      // or changes up the order of its OperatorType enum, this
+      // will need to be changed. please take note of that!
+      expr = source.createBinaryOperation(
+        (CAST::OperatorType)binOp->type,
+        cast(left, info->leftType, info->commonOperandType, false, additionalCopyInfo(binOp->left, info->left), false),
+        cast(right, info->rightType, info->commonOperandType, false, additionalCopyInfo(binOp->right, info->right), false)
+      );
+    }
+
     return co.finalYield(expr);
   }
 };
@@ -3349,6 +3429,16 @@ auto Talta::CTranspiler::transpileClassDefinitionNode(Coroutine& co) -> Coroutin
       source.exitInsertionPoint();
       source.exitInsertionPoint();
 
+      if (info->klass->copyConstructor) {
+        hoist(info->klass->copyConstructor, true);
+      }
+
+      if (info->klass->destructor) {
+        hoist(info->klass->destructor, true);
+      }
+
+      header.exitInsertionPoint();
+
       co.save(isGeneric, genericIndex, (size_t)3);
       co.saveAny(sourceBuilderCache);
       co.save(&aClass->statements, &info->statements, false, (size_t)0, false);
@@ -3394,8 +3484,6 @@ auto Talta::CTranspiler::transpileClassDefinitionNode(Coroutine& co) -> Coroutin
           return co.yield();
         }
       } else {
-        header.exitInsertionPoint();
-
         if (isGeneric) {
           source = ALTACORE_ANY_CAST<Ceetah::Builder>(sbc);
         }
@@ -3472,7 +3560,7 @@ auto Talta::CTranspiler::transpileClassMethodDefinitionStatement(Coroutine& co) 
   auto method = std::dynamic_pointer_cast<AAST::ClassMethodDefinitionStatement>(node);
   auto info = std::dynamic_pointer_cast<DH::ClassMethodDefinitionStatement>(_info);
   if (co.iteration() == 0) {
-    header.insertPreprocessorDefinition(headerMangle(info->funcDef->function.get()));
+    //header.insertPreprocessorDefinition(headerMangle(info->funcDef->function.get()));
     return co.await(boundTranspile, method->funcDef, info->funcDef);
   } else {
     return co.finalYield();
@@ -3502,12 +3590,26 @@ auto Talta::CTranspiler::transpileClassSpecialMethodDefinitionStatement(Coroutin
     std::string prefix;
     decltype(ret) retType = nullptr;
 
+    auto headerName = headerMangle(constr.get());
+    auto mod = AltaCore::Util::getModule(constr->parentScope.lock().get()).lock();
+    auto mangledModName = mangleName(mod.get());
+
+    headerPredeclaration(headerName, mangledModName);
+
+    for (auto& parent: info->klass->parents) {
+      if (parent->defaultConstructor) {
+        hoist(parent->defaultConstructor, false);
+      }
+    }
+
     for (auto& hoistedType: info->method->publicHoistedItems) {
       hoist(hoistedType, true);
     }
     for (auto& hoistedType: info->method->privateHoistedItems) {
       hoist(hoistedType, false);
     }
+
+    hoist(constr, false);
 
     if (isCtor) {
       prefix = "_c_";
@@ -3551,6 +3653,7 @@ auto Talta::CTranspiler::transpileClassSpecialMethodDefinitionStatement(Coroutin
     }
 
     header.insertFunctionDeclaration(prefix + mangledName, fullParams, retType);
+
     source.insertFunctionDefinition(prefix + mangledName, fullParams, retType);
 
     stackBookkeepingStart(constr->scope);
@@ -3573,7 +3676,22 @@ auto Talta::CTranspiler::transpileClassSpecialMethodDefinitionStatement(Coroutin
     } else if (isCtor) {
       for (size_t i = 0; i < constr->parameterVariables.size(); i++) {
         auto& var = constr->parameterVariables[i];
-        if (!currentScope->noRuntime && canPush(var->type)) {
+        if (
+          !currentScope->noRuntime &&
+          canPush(var->isVariable ? var->type->follow() : var->type)
+        ) {
+          if (var->isVariable) {
+            source.insertBlock();
+            source.insertVariableDefinition(source.createType("size_t"), "_Alta_variable_array_index", source.createIntegerLiteral(0));
+            source.insertWhileLoop(
+              source.createBinaryOperation(
+                CAST::OperatorType::LessThan,
+                source.createFetch("_Alta_variable_array_index"),
+                source.createFetch("_Alta_array_length_" + mangleName(var.get()).substr(12))
+              )
+            );
+            source.insertBlock();
+          }
           source.insertExpressionStatement(source.createFunctionCall(
             source.createFetch("_Alta_object_stack_push"),
             {
@@ -3584,9 +3702,15 @@ auto Talta::CTranspiler::transpileClassSpecialMethodDefinitionStatement(Coroutin
                 )
               ),
               source.createCast(
-                source.createPointer(
-                  source.createFetch(mangleName(var.get()))
-                ),
+                var->isVariable
+                  ? source.createBinaryOperation(
+                      CAST::OperatorType::Addition,
+                      source.createFetch("_Alta_array_" + mangleName(var.get()).substr(12)),
+                      source.createFetch("_Alta_variable_array_index")
+                    )
+                  : source.createPointer(
+                      source.createFetch(mangleName(var.get()))
+                    ),
                 source.createType(
                   "_Alta_object",
                   { { CAST::TypeModifierFlag::Pointer } }
@@ -3594,6 +3718,17 @@ auto Talta::CTranspiler::transpileClassSpecialMethodDefinitionStatement(Coroutin
               ),
             }
           ));
+          if (var->isVariable) {
+            source.insertExpressionStatement(
+              source.createUnaryOperation(
+                CAST::UOperatorType::PreIncrement,
+                source.createFetch("_Alta_variable_array_index")
+              )
+            );
+            source.exitInsertionPoint();
+            source.exitInsertionPoint();
+            source.exitInsertionPoint();
+          }
         }
       }
     } else if (isFrom) {
@@ -3927,6 +4062,12 @@ auto Talta::CTranspiler::transpileClassSpecialMethodDefinitionStatement(Coroutin
       source.exitInsertionPoint();
 
       if (info->isCastConstructor) {
+        hoist(info->correspondingMethod, true);
+        header.exitInsertionPoint();
+
+        auto mod = AltaCore::Util::getModule(info->correspondingMethod->parentScope.lock().get()).lock();
+        headerPredeclaration(headerMangle(info->correspondingMethod.get()), mangleName(mod.get()));
+
         auto mangledCast = mangleName(info->correspondingMethod.get());
         auto specialParam = info->correspondingMethod->parameterVariables[0];
         header.insertFunctionDeclaration(mangledCast, {
@@ -3941,6 +4082,9 @@ auto Talta::CTranspiler::transpileClassSpecialMethodDefinitionStatement(Coroutin
         source.exitInsertionPoint();
       }
     }
+
+    header.exitInsertionPoint();
+
     return co.finalYield();
   }
 };
@@ -4134,7 +4278,23 @@ auto Talta::CTranspiler::transpileSubscriptExpression(Coroutine& co) -> Coroutin
      * real reason is that i just didn't feel like adding subscript
      * expression to Ceetah right now. so...
      */
-    CExpression result = source.createDereference(source.createBinaryOperation(CAST::OperatorType::Addition, cTarget, cIndex));
+    CExpression result = nullptr;
+    if (info->operatorMethod) {
+      result = source.createFunctionCall(
+        source.createFetch(mangleName(info->operatorMethod.get())),
+        {
+          source.createPointer(
+            cast(cTarget, info->targetType, info->operatorMethod->parentClassType, false, additionalCopyInfo(subs->target, info->target), false)
+          ),
+          cast(cIndex, info->indexType, info->operatorMethod->parameterVariables.front()->type, true, additionalCopyInfo(subs->index, info->index), false),
+        }
+      );
+      for (size_t i = 0; i < info->operatorMethod->returnType->referenceLevel(); i++) {
+        result = source.createDereference(result);
+      }
+    } else {
+      result = source.createDereference(source.createBinaryOperation(CAST::OperatorType::Addition, cTarget, cIndex));
+    }
     return co.finalYield(result);
   }
 };
@@ -4369,14 +4529,32 @@ auto Talta::CTranspiler::transpileUnaryOperation(Coroutine& co) -> Coroutine& {
     return co.await(boundTranspile, op->target, info->target);
   } else {
     auto expr = co.result<CExpression>();
-    if (op->type == AAST::UOperatorType::Not) {
-      expr = cast(expr, DET::Type::getUnderlyingType(info->target.get()), std::make_shared<DET::Type>(DET::NativeType::Bool), false, additionalCopyInfo(op->target, info->target));
+    CExpression result = nullptr;
+
+    if (info->operatorMethod) {
+      if (!additionalCopyInfo(op->target, info->target).first) {
+        expr = tmpify(expr, info->targetType);
+      }
+      result = source.createFunctionCall(source.createFetch(mangleName(info->operatorMethod.get())), {
+        source.createPointer(
+          cast(expr, info->targetType, info->operatorMethod->parentClassType, false, additionalCopyInfo(op->target, info->target), false)
+        ),
+      });
+      for (size_t i = 0; i < info->operatorMethod->returnType->referenceLevel(); i++) {
+        result = source.createDereference(result);
+      }
+    } else {
+      if (op->type == AAST::UOperatorType::Not) {
+        expr = cast(expr, DET::Type::getUnderlyingType(info->target.get()), std::make_shared<DET::Type>(DET::NativeType::Bool), false, additionalCopyInfo(op->target, info->target));
+      }
+
+      result = source.createUnaryOperation(
+        (CAST::UOperatorType)op->type,
+        expr,
+        op->type == AAST::UOperatorType::PostIncrement || op->type == AAST::UOperatorType::PostDecrement
+      );
     }
-    CExpression result = source.createUnaryOperation(
-      (CAST::UOperatorType)op->type,
-      expr,
-      op->type == AAST::UOperatorType::PostIncrement || op->type == AAST::UOperatorType::PostDecrement
-    );
+
     return co.finalYield(result);
   }
 };
@@ -5323,7 +5501,22 @@ auto Talta::CTranspiler::transpileLambdaExpression(Coroutine& co) -> Coroutine& 
 
       for (size_t i = 0; i < info->function->parameterVariables.size(); i++) {
         auto& var = info->function->parameterVariables[i];
-        if (!currentScope->noRuntime && canPush(var->type)) {
+        if (
+          !currentScope->noRuntime &&
+          canPush(var->isVariable ? var->type->follow() : var->type)
+        ) {
+          if (var->isVariable) {
+            source.insertBlock();
+            source.insertVariableDefinition(source.createType("size_t"), "_Alta_variable_array_index", source.createIntegerLiteral(0));
+            source.insertWhileLoop(
+              source.createBinaryOperation(
+                CAST::OperatorType::LessThan,
+                source.createFetch("_Alta_variable_array_index"),
+                source.createFetch("_Alta_array_length_" + mangleName(var.get()).substr(12))
+              )
+            );
+            source.insertBlock();
+          }
           source.insertExpressionStatement(source.createFunctionCall(
             source.createFetch("_Alta_object_stack_push"),
             {
@@ -5334,9 +5527,15 @@ auto Talta::CTranspiler::transpileLambdaExpression(Coroutine& co) -> Coroutine& 
                 )
               ),
               source.createCast(
-                source.createPointer(
-                  source.createFetch(mangleName(var.get()))
-                ),
+                var->isVariable
+                  ? source.createBinaryOperation(
+                      CAST::OperatorType::Addition,
+                      source.createFetch("_Alta_array_" + mangleName(var.get()).substr(12)),
+                      source.createFetch("_Alta_variable_array_index")
+                    )
+                  : source.createPointer(
+                      source.createFetch(mangleName(var.get()))
+                    ),
                 source.createType(
                   "_Alta_object",
                   { { CAST::TypeModifierFlag::Pointer } }
@@ -5344,6 +5543,17 @@ auto Talta::CTranspiler::transpileLambdaExpression(Coroutine& co) -> Coroutine& 
               ),
             }
           ));
+          if (var->isVariable) {
+            source.insertExpressionStatement(
+              source.createUnaryOperation(
+                CAST::UOperatorType::PreIncrement,
+                source.createFetch("_Alta_variable_array_index")
+              )
+            );
+            source.exitInsertionPoint();
+            source.exitInsertionPoint();
+            source.exitInsertionPoint();
+          }
         }
       }
 
@@ -5698,6 +5908,91 @@ auto Talta::CTranspiler::transpileSpecialFetchExpression(Coroutine& co) -> Corou
 
   CExpression expr = source.createFetch(mangleName(info->items[0].get()));
   return co.finalYield(expr);
+};
+auto Talta::CTranspiler::transpileClassOperatorDefinitionStatement(Coroutine& co) -> Coroutine& {
+  auto [node, _info] = co.arguments();
+  auto op = std::dynamic_pointer_cast<AAST::ClassOperatorDefinitionStatement>(node);
+  auto info = std::dynamic_pointer_cast<DH::ClassOperatorDefinitionStatement>(_info);
+
+  if (co.iteration() == 0) {
+    auto mangledFuncName = mangleName(info->method.get());
+
+    std::vector<std::tuple<std::string, std::shared_ptr<CAST::Type>>> cParams;
+
+    cParams.push_back(std::make_tuple("_Alta_self", transpileType(info->method->parentClassType.get())));
+
+    if (info->method->operatorType == AltaCore::Shared::ClassOperatorType::Index || info->method->orientation != AltaCore::Shared::ClassOperatorOrientation::Unary) {
+      auto& param = info->method->parameterVariables.front();
+      cParams.push_back(std::make_tuple(mangleName(param.get()), transpileType(param->type.get())));
+    }
+
+    auto returnType = transpileType(info->method->returnType.get());
+
+    bool targetIsHeader = true;
+
+    if (!targetIsHeader) {
+      for (auto& hoistedType: info->method->publicHoistedItems) {
+        hoist(hoistedType, false);
+      }
+    }
+    for (auto& hoistedType: info->method->privateHoistedItems) {
+      hoist(hoistedType, false);
+    }
+
+    if (targetIsHeader) {
+      auto mod = AltaCore::Util::getModule(info->method->parentScope.lock().get()).lock();
+      auto mangledModName = mangleName(mod.get());
+      headerPredeclaration("_ALTA_FUNCTION_" + mangledFuncName, mangledModName, true);
+      for (auto arg: info->method->genericArguments) {
+        hoist(arg, true);
+      }
+      for (auto& hoistedType: info->method->publicHoistedItems) {
+        hoist(hoistedType, true);
+      }
+      hoist(info->method->returnType, true);
+      header.insertFunctionDeclaration(mangledFuncName, cParams, returnType);
+      header.exitInsertionPoint();
+    }
+
+    source.insertFunctionDefinition(mangledFuncName, cParams, returnType);
+
+    stackBookkeepingStart(info->method->scope);
+
+    for (size_t i = 0; i < info->method->parameterVariables.size(); i++) {
+      auto& var = info->method->parameterVariables[i];
+      if (!currentScope->noRuntime && canPush(var->type)) {
+        source.insertExpressionStatement(source.createFunctionCall(
+          source.createFetch("_Alta_object_stack_push"),
+          {
+            source.createPointer(
+              source.createAccessor(
+                source.createFetch("_Alta_global_runtime"),
+                "local"
+              )
+            ),
+            source.createCast(
+              source.createPointer(
+                source.createFetch(mangleName(var.get()))
+              ),
+              source.createType(
+                "_Alta_object",
+                { { CAST::TypeModifierFlag::Pointer } }
+              )
+            ),
+          }
+        ));
+      }
+    }
+
+    return co.yield();
+  } else if (co.iteration() - 1 < op->block->statements.size()) {
+    auto i = co.iteration() - 1;
+    return co.await(boundTranspile, op->block->statements[i], info->block->statements[i]);
+  } else {
+    stackBookkeepingStop(info->method->scope);
+    source.exitInsertionPoint();
+    return co.finalYield();
+  }
 };
 // </transpilation-coroutines>
 
