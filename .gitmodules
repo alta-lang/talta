@@ -4,3 +4,6 @@
 [submodule "deps/ceetah"]
 	path = deps/ceetah
 	url = https://github.com/alta-lang/ceetah.git
+[submodule "deps/PicoSHA2"]
+	path = deps/PicoSHA2
+	url = https://github.com/okdshin/PicoSHA2.git

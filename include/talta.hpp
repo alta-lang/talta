@@ -243,6 +243,13 @@ namespace Talta {
           canCopy = !det->operatorMethod;
           canTempify = !canCopy;
         }
+        if (type == ANT::SubscriptExpression) {
+          auto subs = std::dynamic_pointer_cast<AAST::SubscriptExpression>(node);
+          auto det = std::dynamic_pointer_cast<DH::SubscriptExpression>(info);
+
+          canCopy = !det->operatorMethod;
+          canTempify = !canCopy;
+        }
         return std::make_pair(
           (
             type != ANT::ClassInstantiationExpression &&

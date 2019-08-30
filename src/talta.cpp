@@ -1,5 +1,6 @@
 #include "../include/talta.hpp"
 #include "../include/talta/util.hpp"
+#include "picosha2.h"
 
 namespace Talta {
   namespace {
@@ -346,7 +347,10 @@ std::string Talta::mangleName(AltaCore::DET::ScopeItem* item, bool fullName) {
       }
     }
     if (var->isVariable) {
-      mangled += "_Alta_array_";
+      var->isVariable = false;
+      auto tmp = "_Alta_array_" + mangleName(var);
+      var->isVariable = true;
+      return tmp;
     }
   } else if (nodeType == NodeType::Namespace) {
     auto ns = dynamic_cast<DET::Namespace*>(item);
@@ -385,6 +389,13 @@ std::string Talta::mangleName(AltaCore::DET::ScopeItem* item, bool fullName) {
   }
 
   mangled += itemName;
+
+  // new final step for non-literal names: hashing
+  // this is necessary to establish a maximum length for identifiers that
+  // is nearly impossible to have the same output for different inputs
+  if (!isLiteral) {
+    mangled = "Alta_" + picosha2::hash256_hex_string(mangled);
+  }
 
   return mangled;
 };
@@ -901,6 +912,8 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
     auto importModule = AltaCore::Util::getModule(item->parentScope.lock().get()).lock();
     auto mangledImportName = mangleName(importModule.get());
     auto mangledParentName = mangleName(currentModule.get());
+
+    importModule->dependents.push_back(currentModule);
 
     saveExportDefinitions(inHeader);
     target.insertPreprocessorDefinition(headerMangle(item.get()));

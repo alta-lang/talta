@@ -9,7 +9,7 @@ add_library(talta
   "${PROJECT_SOURCE_DIR}/src/talta.cpp"
   "${PROJECT_SOURCE_DIR}/src/util.cpp"
 )
-target_include_directories(talta PUBLIC "${PROJECT_SOURCE_DIR}/include")
+target_include_directories(talta PUBLIC "${PROJECT_SOURCE_DIR}/include" "${PROJECT_SOURCE_DIR}/deps/PicoSHA2")
 
 target_link_libraries(talta PUBLIC altacore ceetah)
 
