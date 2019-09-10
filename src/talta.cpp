@@ -609,29 +609,32 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
           args.push_back(paramFetch);
         }
         target.insertFunctionDefinition("_Alta_call_" + name, params, transpileType(type->returnType.get()), true);
-        target.insertReturnDirective(
-          target.createTernaryOperation(
-            target.createBinaryOperation(
-              CAST::OperatorType::NotEqualTo,
+        auto callExpr = target.createTernaryOperation(
+          target.createBinaryOperation(
+            CAST::OperatorType::NotEqualTo,
+            target.createAccessor("func", "lambda"),
+            target.createFetch("NULL")
+          ),
+          target.createFunctionCall(
+            target.createCast(
               target.createAccessor("func", "lambda"),
-              target.createFetch("NULL")
+              target.createType(name)
             ),
-            target.createFunctionCall(
-              target.createCast(
-                target.createAccessor("func", "lambda"),
-                target.createType(name)
-              ),
-              args
+            args
+          ),
+          target.createFunctionCall(
+            target.createCast(
+              target.createAccessor("func", "plain"),
+              target.createType(cTypeNameify(rawCopy.get()))
             ),
-            target.createFunctionCall(
-              target.createCast(
-                target.createAccessor("func", "plain"),
-                target.createType(cTypeNameify(rawCopy.get()))
-              ),
-              noStateArgs
-            )
+            noStateArgs
           )
         );
+        if (*type->returnType == DET::Type(DET::NativeType::Void)) {
+          target.insertExpressionStatement(callExpr);
+        } else {
+          target.insertReturnDirective(callExpr);
+        }
         target.exitInsertionPoint();
 
         target.insertFunctionDefinition("_Alta_make_from_plain_" + name, {
@@ -758,7 +761,10 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
         }, target.createType("void"), true);
         target.insertExpressionStatement(
           target.createFunctionCall(target.createFetch("_Alta_object_destroy"), {
-            target.createFetch("func"),
+            target.createCast(
+              target.createFetch("func"),
+              target.createType("_Alta_object", { { CAST::TypeModifierFlag::Pointer } })
+            ),
           })
         );
         target.exitInsertionPoint();
@@ -4645,11 +4651,18 @@ auto Talta::CTranspiler::transpileDeleteStatement(Coroutine& co) -> Coroutine& {
   auto info = std::dynamic_pointer_cast<DH::DeleteStatement>(_info);
 
   if (co.iteration() == 0) {
+    auto type = AltaCore::DET::Type::getUnderlyingType(info->target.get());
+    bool canDestroy = !type->isNative && (info->persistent || type->pointerLevel() < 1);
+
+    if (!canDestroy) {
+      return co.finalYield();
+    }
+
+    co.save(type, canDestroy);
     return co.await(boundTranspile, del->target, info->target);
   } else {
-    auto type = AltaCore::DET::Type::getUnderlyingType(info->target.get());
+    auto [type, canDestroy] = co.load<std::shared_ptr<DET::Type>, bool>();
     auto tgt = co.result<CExpression>();
-    bool canDestroy = !type->isNative && (info->persistent || type->pointerLevel() < 1);
 
     if (info->persistent) {
       for (size_t i = 0; i < type->pointerLevel(); i++) {
