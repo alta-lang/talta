@@ -2744,7 +2744,16 @@ auto Talta::CTranspiler::transpileFunctionCallExpression(Coroutine& co) -> Corou
     }
   } else {
     std::vector<std::shared_ptr<CAST::Expression>> args;
+    std::shared_ptr<AAST::Accessor> acc = nullptr;
+    std::shared_ptr<DH::Accessor> accInfo = nullptr;
+    std::shared_ptr<CAST::Expression> virtFetch = nullptr;
+    std::shared_ptr<CAST::Expression> virtAssign = nullptr;
+    std::shared_ptr<DET::Function> virtFunc = nullptr;
     if (info->isMethodCall) {
+      acc = std::dynamic_pointer_cast<AAST::Accessor>(call->target);
+      accInfo = std::dynamic_pointer_cast<DH::Accessor>(info->target);
+      virtFunc = std::dynamic_pointer_cast<DET::Function>(accInfo->narrowedTo);
+
       auto selfAlta = info->methodClassTarget;
       auto selfInfo = info->methodClassTargetInfo;
       auto selfType = AltaCore::DET::Type::getUnderlyingType(selfInfo.get());
@@ -2755,9 +2764,37 @@ auto Talta::CTranspiler::transpileFunctionCallExpression(Coroutine& co) -> Corou
       bool didRetrieval = false;
       auto exprType = std::make_shared<AltaCore::DET::Type>(selfType->klass);
       auto targetType = std::make_shared<AltaCore::DET::Type>(info->targetType->methodParent);
-      self = doParentRetrieval(self, exprType, targetType, &didRetrieval);
-      self = source.createPointer(self);
-      args.push_back(self);
+
+      if (virtFunc && virtFunc->isVirtual()) {
+        auto basicClassType = source.createType("_Alta_basic_class", { { CAST::TypeModifierFlag::Pointer } });
+        self = source.createPointer(self);
+        auto tmpName = mangleName(currentScope.get()) + "_temp_var_" + std::to_string(tempVarIDs[currentScope->id]++);
+        source.insertVariableDefinition(basicClassType, tmpName);
+        virtFetch = source.createFetch(tmpName);
+        virtAssign = source.createMultiExpression({
+          source.createAssignment(
+            virtFetch,
+            source.createCast(
+              self,
+              basicClassType
+            )
+          ),
+          source.createAssignment(
+            virtFetch,
+            source.createFunctionCall(
+              source.createFetch("_Alta_get_root_instance"),
+              {
+                virtFetch,
+              }
+            )
+          ),
+        });
+        args.push_back(virtFetch);
+      } else {
+        self = doParentRetrieval(self, exprType, targetType, &didRetrieval);
+        self = source.createPointer(self);
+        args.push_back(self);
+      }
     } else if (!info->targetType->isRawFunction) {
       args.push_back(co.result<CExpression>());
     }
@@ -2767,9 +2804,39 @@ auto Talta::CTranspiler::transpileFunctionCallExpression(Coroutine& co) -> Corou
     CExpression result = nullptr;
     auto refLevel = info->targetType->returnType->referenceLevel();
     if (info->isMethodCall) {
-      auto acc = std::dynamic_pointer_cast<AAST::Accessor>(call->target);
-      auto accInfo = std::dynamic_pointer_cast<DH::Accessor>(info->target);
-      result = source.createFunctionCall(source.createFetch(mangleName(accInfo->narrowedTo.get())), args);
+      if (virtFunc && virtFunc->isVirtual()) {
+        auto point = popToGlobal();
+        auto cFuncType = transpileType(info->targetType.get());
+        cFuncType->parameters.insert(cFuncType->parameters.begin(), source.createType(mangleName(virtFunc->parentClassType->klass.get()), { { CAST::TypeModifierFlag::Pointer } }));
+        hoist(info->targetType);
+        result = source.createFunctionCall(
+          source.createCast(
+            source.createFunctionCall(
+              source.createFetch("_Alta_lookup_virtual_function"),
+              {
+                source.createAccessor(
+                  source.createAccessor(
+                    source.createDereference(
+                      source.createMultiExpression({
+                        virtAssign,
+                        virtFetch,
+                      })
+                    ),
+                    "_Alta_class_info_struct"
+                  ),
+                  "typeName"
+                ),
+                source.createStringLiteral(mangleType(info->targetType.get())),
+              }
+            ),
+            cFuncType
+          ),
+          args
+        );
+        pushFromGlobal(point);
+      } else {
+        result = source.createFunctionCall(source.createFetch(mangleName(accInfo->narrowedTo.get())), args);
+      }
     } else if (!info->targetType->isRawFunction) {
       auto rawCopy = info->targetType->copy();
       rawCopy->isRawFunction = true;
@@ -6115,22 +6182,39 @@ void Talta::CTranspiler::transpile(std::shared_ptr<AltaCore::AST::RootNode> alta
   for (size_t i = 0; i < altaRoot->statements.size(); i++) {
     auto& stmt = altaRoot->statements[i];
     auto& stmtInfo = altaRoot->info->statements[i];
-    if (stmt->nodeType() != AAST::NodeType::ExpressionStatement) continue;
-    auto exprStmt = std::dynamic_pointer_cast<AAST::ExpressionStatement>(stmt);
-    auto exprStmtInfo = std::dynamic_pointer_cast<DH::ExpressionStatement>(stmtInfo);
-    if (exprStmt->expression->nodeType() != AAST::NodeType::VariableDefinitionExpression) continue;
-    auto var = std::dynamic_pointer_cast<AAST::VariableDefinitionExpression>(exprStmt->expression);
-    auto det = std::dynamic_pointer_cast<DH::VariableDefinitionExpression>(exprStmtInfo->expression);
-    if (!var->initializationExpression || det->variable->type->isNative || det->variable->type->indirectionLevel() > 0) continue;
 
-    source.insertExpressionStatement(
-      source.createAssignment(
-        source.createFetch(
-          mangleName(det->variable.get())
-        ),
-        transpile(var->initializationExpression, det->initializationExpression)
-      )
-    );
+    if (stmt->nodeType() == AAST::NodeType::ExpressionStatement) {
+      auto exprStmt = std::dynamic_pointer_cast<AAST::ExpressionStatement>(stmt);
+      auto exprStmtInfo = std::dynamic_pointer_cast<DH::ExpressionStatement>(stmtInfo);
+
+      if (exprStmt->expression->nodeType() != AAST::NodeType::VariableDefinitionExpression) continue;
+      auto var = std::dynamic_pointer_cast<AAST::VariableDefinitionExpression>(exprStmt->expression);
+      auto det = std::dynamic_pointer_cast<DH::VariableDefinitionExpression>(exprStmtInfo->expression);
+      if (!var->initializationExpression || det->variable->type->isNative || det->variable->type->indirectionLevel() > 0) continue;
+
+      source.insertExpressionStatement(
+        source.createAssignment(
+          source.createFetch(
+            mangleName(det->variable.get())
+          ),
+          transpile(var->initializationExpression, det->initializationExpression)
+        )
+      );
+    } else if (stmt->nodeType() == AAST::NodeType::ClassDefinitionNode) {
+      auto klass = std::dynamic_pointer_cast<AAST::ClassDefinitionNode>(stmt);
+      auto klassInfo = std::dynamic_pointer_cast<DH::ClassDefinitionNode>(stmtInfo);
+      for (auto& virtFunc: klassInfo->klass->findAllVirtualFunctions()) {
+        source.insertExpressionStatement(
+          source.createFunctionCall(
+            source.createFetch("_Alta_register_virtual_function"),
+            {
+              source.createStringLiteral(mangleName(klassInfo->klass.get()) + "$" + mangleType(DET::Type::getUnderlyingType(virtFunc).get())),
+              source.createFetch(mangleName(virtFunc.get())),
+            }
+          )
+        );
+      }
+    }
   }
 
   source.exitInsertionPoint();
