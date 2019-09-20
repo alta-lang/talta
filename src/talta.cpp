@@ -2388,7 +2388,10 @@ auto Talta::CTranspiler::transpileAccessor(Coroutine& co) -> Coroutine& {
         refLevel = ut->referenceLevel();
       }
     } else if (info->readAccessor) {
+      bool isVirt = info->readAccessor->isVirtual();
       auto readAccFetch = source.createFetch(mangleName(info->readAccessor.get()));
+      std::shared_ptr<CAST::Expression> virtFetch = nullptr;
+      std::shared_ptr<CAST::Expression> virtAssign = nullptr;
 
       auto tmpName = mangleName(info->inputScope.get()) + "_temp_var_" + std::to_string(tempVarIDs[info->inputScope->id]++);
 
@@ -2444,13 +2447,76 @@ auto Talta::CTranspiler::transpileAccessor(Coroutine& co) -> Coroutine& {
             )
           );
         }
-        args.push_back(source.createPointer(self));
+
+        if (isVirt) {
+          auto basicClassType = source.createType("_Alta_basic_class", { { CAST::TypeModifierFlag::Pointer } });
+          self = source.createPointer(self);
+          auto tmpName = mangleName(currentScope.get()) + "_temp_var_" + std::to_string(tempVarIDs[currentScope->id]++);
+          source.insertVariableDefinition(basicClassType, tmpName);
+          virtFetch = source.createFetch(tmpName);
+          virtAssign = source.createMultiExpression({
+            source.createAssignment(
+              virtFetch,
+              source.createCast(
+                self,
+                basicClassType
+              )
+            ),
+            source.createAssignment(
+              virtFetch,
+              source.createFunctionCall(
+                source.createFetch("_Alta_get_root_instance"),
+                {
+                  virtFetch,
+                }
+              )
+            ),
+          });
+          args.push_back(virtFetch);
+        } else {
+          args.push_back(source.createPointer(self));
+        }
+      }
+
+      if (isVirt) {
+        auto point = popToGlobal();
+        auto normalFuncType = DET::Type::getUnderlyingType(info->readAccessor);
+        auto funcType = normalFuncType->copy();
+        funcType->parameters.insert(funcType->parameters.begin(), std::make_tuple("", info->readAccessor->parentClassType, false, ""));
+        hoist(funcType);
+        result = source.createFunctionCall(
+          source.createCast(
+            source.createFunctionCall(
+              source.createFetch("_Alta_lookup_virtual_function"),
+              {
+                source.createAccessor(
+                  source.createAccessor(
+                    source.createDereference(
+                      source.createMultiExpression({
+                        virtAssign,
+                        virtFetch,
+                      })
+                    ),
+                    "_Alta_class_info_struct"
+                  ),
+                  "typeName"
+                ),
+                source.createStringLiteral(mangleType(normalFuncType.get())),
+              }
+            ),
+            transpileType(funcType.get())
+          ),
+          args
+        );
+        pushFromGlobal(point);
+      } else {
+        result = source.createFunctionCall(readAccFetch, args);
       }
 
       result = source.createMultiExpression({
         source.createAssignment(
           source.createFetch(tmpName),
-          source.createFunctionCall(readAccFetch, args)
+          result
         ),
         source.createFetch(tmpName),
       });
@@ -2806,9 +2872,9 @@ auto Talta::CTranspiler::transpileFunctionCallExpression(Coroutine& co) -> Corou
     if (info->isMethodCall) {
       if (virtFunc && virtFunc->isVirtual()) {
         auto point = popToGlobal();
-        auto cFuncType = transpileType(info->targetType.get());
-        cFuncType->parameters.insert(cFuncType->parameters.begin(), source.createType(mangleName(virtFunc->parentClassType->klass.get()), { { CAST::TypeModifierFlag::Pointer } }));
-        hoist(info->targetType);
+        auto funcType = info->targetType->copy();
+        funcType->parameters.insert(funcType->parameters.begin(), std::make_tuple("", virtFunc->parentClassType, false, ""));
+        hoist(funcType);
         result = source.createFunctionCall(
           source.createCast(
             source.createFunctionCall(
@@ -2829,7 +2895,7 @@ auto Talta::CTranspiler::transpileFunctionCallExpression(Coroutine& co) -> Corou
                 source.createStringLiteral(mangleType(info->targetType.get())),
               }
             ),
-            cFuncType
+            transpileType(funcType.get())
           ),
           args
         );
