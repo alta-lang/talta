@@ -2058,6 +2058,36 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
       >();
 
       stackBookkeepingStop(info->function->scope);
+
+      if (!(*info->function->returnType == DET::Type(DET::NativeType::Void))) {
+        // insert a default return value to keep the compiler happy,
+        // but throw an error
+        std::shared_ptr<CAST::Expression> defaultValue = nullptr;
+        if (info->function->returnType->indirectionLevel() > 0 || (info->function->returnType->isFunction && info->function->returnType->isRawFunction)) {
+          defaultValue = source.createFetch("NULL");
+        } else if (info->function->returnType->isOptional) {
+          defaultValue = source.createFunctionCall(source.createFetch("_Alta_make_empty_" + cTypeNameify(info->function->returnType.get())), {});
+        } else if (info->function->returnType->isFunction) {
+          defaultValue = source.createArrayLiteral({ source.createIntegerLiteral(0) }, source.createType("_Alta_basic_function"));
+        } else if (info->function->returnType->isUnion()) {
+          defaultValue = source.createArrayLiteral({ source.createIntegerLiteral(0) }, source.createType(cTypeNameify(info->function->returnType.get())));
+        } else if (info->function->returnType->isNative) {
+          defaultValue = source.createIntegerLiteral(0);
+        } else {
+          defaultValue = source.createArrayLiteral({ source.createIntegerLiteral(0) }, source.createType(cTypeNameify(info->function->returnType.get())));
+        }
+
+        source.insertReturnDirective(
+          source.createMultiExpression({
+            source.createFunctionCall(
+              source.createFetch("_Alta_invalid_return_value"),
+              {}
+            ),
+            defaultValue
+          })
+        );
+      }
+
       source.exitInsertionPoint();
 
       if (isGeneric && !targetIsHeader) {
@@ -2472,7 +2502,12 @@ auto Talta::CTranspiler::transpileAccessor(Coroutine& co) -> Coroutine& {
               )
             ),
           });
-          args.push_back(virtFetch);
+          args.push_back(
+            source.createCast(
+              virtFetch,
+              transpileType(info->readAccessor->parentClassType.get())
+            )
+          );
         } else {
           args.push_back(source.createPointer(self));
         }
@@ -2855,7 +2890,12 @@ auto Talta::CTranspiler::transpileFunctionCallExpression(Coroutine& co) -> Corou
             )
           ),
         });
-        args.push_back(virtFetch);
+        args.push_back(
+          source.createCast(
+            virtFetch,
+            transpileType(virtFunc->parentClassType.get())
+          )
+        );
       } else {
         self = doParentRetrieval(self, exprType, targetType, &didRetrieval);
         self = source.createPointer(self);
