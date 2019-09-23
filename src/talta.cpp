@@ -2,6 +2,10 @@
 #include "../include/talta/util.hpp"
 #include "picosha2.h"
 
+#ifndef NDEBUG
+#include <iostream>
+#endif
+
 namespace Talta {
   namespace {
     using AltaNodeType = AltaCore::AST::NodeType;
@@ -87,6 +91,8 @@ namespace Talta {
   };
 
   const CTranspiler::CopyInfo CTranspiler::defaultCopyInfo = std::make_pair(false, false);
+
+  std::unordered_set<std::string> currentlyBeingTranspiled;
 };
 
 std::vector<std::shared_ptr<Ceetah::AST::Expression>> Talta::CTranspiler::processArgs(std::vector<ALTACORE_VARIANT<std::pair<std::shared_ptr<AltaCore::AST::ExpressionNode>, std::shared_ptr<AltaCore::DH::ExpressionNode>>, std::vector<std::pair<std::shared_ptr<AltaCore::AST::ExpressionNode>, std::shared_ptr<AltaCore::DH::ExpressionNode>>>>> adjustedArguments, std::vector<std::tuple<std::string, std::shared_ptr<AltaCore::DET::Type>, bool, std::string>> parameters) {
@@ -2794,14 +2800,31 @@ auto Talta::CTranspiler::transpileBinaryOperation(Coroutine& co) -> Coroutine& {
         expr = source.createDereference(expr);
       }
     } else {
+      std::shared_ptr<CAST::Expression> leftExpr = nullptr;
+      std::shared_ptr<CAST::Expression> rightExpr = nullptr;
+
+      if (
+        (
+          (info->leftType->pointerLevel() > 0 && info->rightType->isNative) ||
+          (info->leftType->isNative && info->rightType->pointerLevel() > 0)
+        ) &&
+        (size_t)info->type < (size_t)AltaCore::Shared::OperatorType::EqualTo
+      ) {
+        leftExpr = left;
+        rightExpr = right;
+      } else {
+        leftExpr = cast(left, info->leftType, info->commonOperandType, false, additionalCopyInfo(binOp->left, info->left), false);
+        rightExpr = cast(right, info->rightType, info->commonOperandType, false, additionalCopyInfo(binOp->right, info->right), false);
+      }
+
       // for now, we can just cast from one to the other, since they're
       // identical. however, if Alta ever introduces non-C binary operators,
       // or changes up the order of its OperatorType enum, this
       // will need to be changed. please take note of that!
       expr = source.createBinaryOperation(
         (CAST::OperatorType)binOp->type,
-        cast(left, info->leftType, info->commonOperandType, false, additionalCopyInfo(binOp->left, info->left), false),
-        cast(right, info->rightType, info->commonOperandType, false, additionalCopyInfo(binOp->right, info->right), false)
+        leftExpr,
+        rightExpr
       );
     }
 
@@ -6329,6 +6352,15 @@ void Talta::CTranspiler::transpile(std::shared_ptr<AltaCore::AST::RootNode> alta
 ALTACORE_MAP<std::string, std::tuple<std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<Ceetah::AST::RootNode>, std::vector<std::shared_ptr<Ceetah::AST::RootNode>>, std::vector<std::shared_ptr<AltaCore::DET::ScopeItem>>, std::shared_ptr<AltaCore::DET::Module>>> Talta::recursivelyTranspileToC(std::shared_ptr<AltaCore::AST::RootNode> altaRoot, CTranspiler* transpiler) {
   ALTACORE_MAP<std::string, std::tuple<std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<Ceetah::AST::RootNode>, std::vector<std::shared_ptr<Ceetah::AST::RootNode>>, std::vector<std::shared_ptr<AltaCore::DET::ScopeItem>>, std::shared_ptr<AltaCore::DET::Module>>> results;
 
+  if (currentlyBeingTranspiled.find(altaRoot->id) != currentlyBeingTranspiled.end()) {
+#ifndef NDEBUG
+    std::cout << "DEBUG-WARNING: Alta AST asked to be re-transpiled" << std::endl;
+#endif
+    return results;
+  }
+
+  currentlyBeingTranspiled.insert(altaRoot->id);
+
   bool deleteIt = false;
   if (transpiler == nullptr) {
     deleteIt = true;
@@ -6352,6 +6384,7 @@ ALTACORE_MAP<std::string, std::tuple<std::shared_ptr<Ceetah::AST::RootNode>, std
 
   if (deleteIt) {
     delete transpiler;
+    currentlyBeingTranspiled.clear();
   }
 
   return results;
