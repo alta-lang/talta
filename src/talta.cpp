@@ -93,6 +93,7 @@ namespace Talta {
   const CTranspiler::CopyInfo CTranspiler::defaultCopyInfo = std::make_pair(false, false);
 
   std::unordered_set<std::string> currentlyBeingTranspiled;
+  ALTACORE_MAP<std::string, std::string> friendlyNames;
 };
 
 std::vector<std::shared_ptr<Ceetah::AST::Expression>> Talta::CTranspiler::processArgs(std::vector<ALTACORE_VARIANT<std::pair<std::shared_ptr<AltaCore::AST::ExpressionNode>, std::shared_ptr<AltaCore::DH::ExpressionNode>>, std::vector<std::pair<std::shared_ptr<AltaCore::AST::ExpressionNode>, std::shared_ptr<AltaCore::DH::ExpressionNode>>>>> adjustedArguments, std::vector<std::tuple<std::string, std::shared_ptr<AltaCore::DET::Type>, bool, std::string>> parameters) {
@@ -294,13 +295,18 @@ std::string Talta::mangleName(AltaCore::DET::Module* mod, bool fullName) {
   // we have to use another character to separate version parts
   // 'a' works just fine
   auto versionString = std::to_string(version.major) + 'a' + std::to_string(version.minor) + 'a' + std::to_string(version.patch);
+  auto normalVersionString = std::to_string(version.major) + '.' + std::to_string(version.minor) + '.' + std::to_string(version.patch);
   if (version.prerelease != NULL) {
     versionString += std::string("_6_") + version.prerelease;
+    normalVersionString += '-' + std::string(version.prerelease);
   }
   if (version.metadata != NULL) {
     versionString += std::string("_7_") + version.metadata;
+    normalVersionString += '+' + std::string(version.metadata);
   }
-  return escapeName(mod->name) + "_5_" + versionString;
+  auto result = escapeName(mod->name) + "_5_" + versionString;
+  friendlyNames[result] = mod->name + '@' + normalVersionString;
+  return result;
 };
 std::string Talta::mangleName(AltaCore::DET::Scope* scope, bool fullName) {
   std::string mangled = "_4_" + std::to_string(scope->relativeID);
@@ -314,6 +320,7 @@ std::string Talta::mangleName(AltaCore::DET::Scope* scope, bool fullName) {
   } else if (auto ns = scope->parentNamespace.lock()) {
     mangled = mangleName(ns.get(), true) + "_0_" + mangled;
   }
+  friendlyNames[mangled] = "<scope#" + std::to_string(scope->relativeID) + ">";
   return mangled;
 };
 std::string Talta::mangleName(AltaCore::DET::ScopeItem* item, bool fullName) {
@@ -402,6 +409,8 @@ std::string Talta::mangleName(AltaCore::DET::ScopeItem* item, bool fullName) {
   if (!isLiteral) {
     mangled = "Alta_" + picosha2::hash256_hex_string(mangled);
   }
+
+  friendlyNames[mangled] = item->name;
 
   return mangled;
 };
@@ -2284,7 +2293,10 @@ auto Talta::CTranspiler::transpileVariableDefinitionExpression(Coroutine& co) ->
     } else if (info->type->type->isNative) {
       init = source.createArrayLiteral({ source.createIntegerLiteral(0) });
     } else if (!inModuleRoot && !info->type->type->isUnion()) {
+      auto state = popToGlobal();
+      hoist(info->type->type->klass->defaultConstructor);
       init = source.createFunctionCall(source.createFetch("_cn_" + mangleName(info->type->type->klass->defaultConstructor.get())), {});
+      pushFromGlobal(state);
     }
 
     for (size_t i = 0; i < info->type->type->referenceLevel(); i++) {
@@ -6307,6 +6319,348 @@ void Talta::CTranspiler::transpile(std::shared_ptr<AltaCore::AST::RootNode> alta
       )
     );
   }
+
+  std::function<std::string(std::shared_ptr<DET::ScopeItem>)> fullNameify = [&](std::shared_ptr<DET::ScopeItem> item) -> std::string {
+    std::string result = "%unknown%";
+
+    if (auto klass = std::dynamic_pointer_cast<DET::Class>(item)) {
+      result = klass->name;
+      if (klass->genericArguments.size() > 0) {
+        result += '<';
+        bool isFirst = true;
+        for (auto& genArg: klass->genericArguments) {
+          if (isFirst) {
+            isFirst = false;
+          } else {
+            result += ", ";
+          }
+          result += fullNameify(genArg);
+        }
+        result += '>';
+      }
+    } else if (auto func = std::dynamic_pointer_cast<DET::Function>(item)) {
+      result = func->name;
+      if (func->genericArguments.size() == func->genericParameterCount) {
+        if (func->genericArguments.size() > 0) {
+          result += '<';
+          bool isFirst = true;
+          for (auto& genArg: func->genericArguments) {
+            if (isFirst) {
+              isFirst = false;
+            } else {
+              result += ", ";
+            }
+            result += fullNameify(genArg);
+          }
+          result += '>';
+        }
+        result += '(';
+        bool isFirst = true;
+        for (auto& [name, type, isVariable, id]: func->parameters) {
+          if (isFirst) {
+            isFirst = false;
+          } else {
+            result += ", ";
+          }
+          result += name + ": " + fullNameify(type);
+          if (isVariable) {
+            result += "...";
+          }
+        }
+        result += "): ";
+        result += fullNameify(func->returnType);
+      }
+    } else if (auto ns = std::dynamic_pointer_cast<DET::Namespace>(item)) {
+      result = ns->name;
+    } else if (auto type = std::dynamic_pointer_cast<DET::Type>(item)) {
+      result = type->name;
+
+      if (!type->name.empty()) {
+        result += " { ";
+      }
+
+      for (auto& mod: type->modifiers) {
+        using TMF = DET::TypeModifierFlag;
+        if (mod & (size_t)TMF::Constant) {
+          result += "const ";
+        }
+        if (mod & (size_t)TMF::Signed) {
+          result += "signed ";
+        }
+        if (mod & (size_t)TMF::Unsigned) {
+          result += "unsigned ";
+        }
+        if (mod & (size_t)TMF::Short) {
+          result += "short ";
+        }
+        if (mod & (size_t)TMF::Long) {
+          result += "long ";
+        }
+        if (mod & (size_t)TMF::Pointer) {
+          result += "ptr ";
+        }
+        if (mod & (size_t)TMF::Reference) {
+          result += "ref ";
+        }
+      }
+      if (type->isFunction) {
+        result += "(";
+        bool isFirst = true;
+        for (auto& [name, type, isVariable, id]: type->parameters) {
+          if (isFirst) {
+            isFirst = false;
+          } else {
+            result += ", ";
+          }
+          if (!name.empty()) {
+            result += name + ": ";
+          }
+          result += fullNameify(type);
+          if (isVariable) {
+            result += "...";
+          }
+        }
+        result += ')';
+        if (type->isRawFunction) {
+          result += " -> ";
+        } else {
+          result += " => ";
+        }
+        result += fullNameify(type->returnType);
+      } else if (type->isUnion()) {
+        if (type->modifiers.size() > 0) {
+          result += '(';
+        }
+        bool isFirst = true;
+        for (auto& uni: type->unionOf) {
+          if (isFirst) {
+            isFirst = false;
+          } else {
+            result += " | ";
+          }
+          if (uni->isFunction) {
+            result += '(';
+          }
+          result += fullNameify(uni);
+          if (uni->isFunction) {
+            result += ')';
+          }
+        }
+        if (type->modifiers.size() > 0) {
+          result += ')';
+        }
+      } else if (type->isOptional) {
+        if (type->modifiers.size() > 0) {
+          result += '(';
+        }
+        if (type->optionalTarget->isUnion() || type->isFunction) {
+          result += '(';
+        }
+        result += fullNameify(type->optionalTarget);
+        if (type->optionalTarget->isUnion() || type->isFunction) {
+          result += ')';
+        }
+        result += '?';
+        if (type->modifiers.size() > 0) {
+          result += ')';
+        }
+      } else if (type->isAny) {
+        result += "any";
+      } else if (type->bitfield) {
+        result += fullNameify(type->bitfield);
+      } else if (type->isNative) {
+        using NT = DET::NativeType;
+        switch (type->nativeTypeName) {
+          case NT::Bool: {
+            result += "bool";
+          } break;
+          case NT::Byte: {
+            result += "byte";
+          } break;
+          case NT::Double: {
+            result += "double";
+          } break;
+          case NT::Float: {
+            result += "float";
+          } break;
+          case NT::Integer: {
+            result += "int";
+          } break;
+          case NT::Void: {
+            result += "void";
+          } break;
+          default: {
+            result += type->userDefinedName;
+          } break;
+        }
+      } else if (type->klass) {
+        result += fullNameify(type->klass);
+      } else {
+        result += "%unknown%";
+      }
+
+      if (!type->name.empty()) {
+        result += " }";
+      }
+    } else if (auto var = std::dynamic_pointer_cast<DET::Variable>(item)) {
+      result = var->name + ": " + fullNameify(var->type);
+    }
+
+    if (auto pScope = item->parentScope.lock()) {
+      result = friendlyNames[mangleName(pScope.get())] + '.' + result;
+
+      while (auto ppScope = pScope->parent.lock()) {
+        pScope = ppScope;
+        result = friendlyNames[mangleName(pScope.get())] + '.' + result;
+      }
+
+      if (auto pMod = pScope->parentModule.lock()) {
+        result = '[' + friendlyNames[mangleName(pMod.get())] + "]." + result;
+      } else if (auto pFunc = pScope->parentFunction.lock()) {
+        auto str = fullNameify(pFunc);
+        auto pos = str.find_last_of('.');
+        result = str.substr(0, pos) + ".[" + str.substr(pos + 1) + "]." + result;
+      } else if (auto pClass = pScope->parentClass.lock()) {
+        result = fullNameify(pClass) + '.' + result;
+      } else if (auto pNamespace = pScope->parentNamespace.lock()) {
+        result = fullNameify(pNamespace) + '.' + result;
+      }
+    }
+
+    return result;
+  };
+
+  std::function<void(std::shared_ptr<DET::Scope>)> loopScopes = nullptr;
+
+  std::function<void(std::shared_ptr<DET::ScopeItem>)> loop = [&](std::shared_ptr<DET::ScopeItem> item) -> void {
+    auto mangled = mangleName(item.get());
+
+    if (item->nodeType() == DET::NodeType::Alias) {
+      auto comment = std::make_shared<CAST::Statement>();
+      comment->preComment = "ignored symbol: " + mangled;
+      source.insert(comment);
+    } else {
+      auto fullName = fullNameify(item);
+
+      source.insertExpressionStatement(
+        source.createFunctionCall(
+          source.createFetch("_Alta_register_symbol"),
+          {
+            source.createStringLiteral(mangled),
+            source.createArrayLiteral(
+              {
+                source.createStringLiteral(friendlyNames[mangled]),
+                source.createStringLiteral(fullName)
+              },
+              source.createType("_Alta_symbol_info")
+            )
+          }
+        )
+      );
+
+      if (auto klass = std::dynamic_pointer_cast<DET::Class>(item)) {
+        auto mangledScopeName = mangleName(klass->scope.get());
+        source.insertExpressionStatement(
+          source.createFunctionCall(
+            source.createFetch("_Alta_register_symbol"),
+            {
+              source.createStringLiteral(mangledScopeName),
+              source.createArrayLiteral(
+                {
+                  source.createStringLiteral(friendlyNames[mangledScopeName]),
+                  source.createStringLiteral(fullName + '.' + friendlyNames[mangledScopeName])
+                },
+                source.createType("_Alta_symbol_info")
+              )
+            }
+          )
+        );
+
+        if (klass->genericArguments.size() != klass->genericParameterCount) {
+          for (auto& info: klass->info.lock()->genericInstantiations) {
+            loop(info->klass);
+          }
+        }
+
+        loopScopes(klass->scope);
+      } else if (auto func = std::dynamic_pointer_cast<DET::Function>(item)) {
+        auto pos = fullName.find_last_of('.');
+
+        auto mangledScopeName = mangleName(func->scope.get());
+        source.insertExpressionStatement(
+          source.createFunctionCall(
+            source.createFetch("_Alta_register_symbol"),
+            {
+              source.createStringLiteral(mangledScopeName),
+              source.createArrayLiteral(
+                {
+                  source.createStringLiteral(friendlyNames[mangledScopeName]),
+                  source.createStringLiteral(fullName.substr(0, pos) + ".[" + fullName.substr(pos + 1) + "]." + friendlyNames[mangledScopeName])
+                },
+                source.createType("_Alta_symbol_info")
+              )
+            }
+          )
+        );
+
+        if (func->genericArguments.size() != func->genericParameterCount) {
+          for (auto& info: func->info.lock()->genericInstantiations) {
+            loop(info->function);
+          }
+        }
+
+        loopScopes(func->scope);
+      } else if (auto ns = std::dynamic_pointer_cast<DET::Namespace>(item)) {
+        auto mangledScopeName = mangleName(ns->scope.get());
+        source.insertExpressionStatement(
+          source.createFunctionCall(
+            source.createFetch("_Alta_register_symbol"),
+            {
+              source.createStringLiteral(mangledScopeName),
+              source.createArrayLiteral(
+                {
+                  source.createStringLiteral(friendlyNames[mangledScopeName]),
+                  source.createStringLiteral(fullName + '.' + friendlyNames[mangledScopeName])
+                },
+                source.createType("_Alta_symbol_info")
+              )
+            }
+          )
+        );
+
+        loopScopes(ns->scope);
+      }
+    }
+  };
+
+  loopScopes = [&](std::shared_ptr<DET::Scope> scope) {
+    for (auto& item: scope->items) {
+      loop(item);
+    }
+    for (auto& childScope: scope->childScopes) {
+      loopScopes(childScope);
+    }
+  };
+
+  auto mangledModName = mangleName(currentModule.get());
+
+  source.insertExpressionStatement(
+    source.createFunctionCall(
+      source.createFetch("_Alta_register_symbol"),
+      {
+        source.createStringLiteral(mangledModName),
+        source.createArrayLiteral(
+          {
+            source.createStringLiteral(friendlyNames[mangledModName]),
+            source.createStringLiteral(friendlyNames[mangledModName])
+          },
+          source.createType("_Alta_symbol_info")
+        )
+      }
+    )
+  );
+
+  loopScopes(currentModule->scope);
 
   for (size_t i = 0; i < altaRoot->statements.size(); i++) {
     auto& stmt = altaRoot->statements[i];
