@@ -2854,6 +2854,7 @@ auto Talta::CTranspiler::transpileImportStatement(Coroutine& co) -> Coroutine& {
     header.insertPreprocessorInclusion("_ALTA_MODULE_" + mangledParentName + "_0_INCLUDE_" + mangleImportName, CAST::InclusionType::Computed);
   } else {
     bool imp = false;
+    /*
     for (auto& item: info->importedItems) {
       auto def = headerMangle(item.get());
       if (def.empty()) continue;
@@ -2861,6 +2862,7 @@ auto Talta::CTranspiler::transpileImportStatement(Coroutine& co) -> Coroutine& {
       header.insertPreprocessorDefinition(def);
       header.insertPreprocessorInclusion("_ALTA_MODULE_" + mangledParentName + "_0_INCLUDE_" + mangleImportName, CAST::InclusionType::Computed);
     }
+    */
     if (!imp) {
       header.insertPreprocessorInclusion("_ALTA_MODULE_" + mangledParentName + "_0_INCLUDE_" + mangleImportName, CAST::InclusionType::Computed);
     }

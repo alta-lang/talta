@@ -272,16 +272,18 @@ namespace Talta {
         return (
           exprType->pointerLevel() < 1 &&
           (
-            !exprType->isNative &&
             (
-              exprType->isUnion() ||
-              exprType->isOptional ||
-              exprType->klass->destructor
+              !exprType->isNative &&
+              (
+                exprType->isUnion() ||
+                exprType->isOptional ||
+                exprType->klass->destructor
+              )
+            ) ||
+            (
+              exprType->isFunction &&
+              !exprType->isRawFunction
             )
-          ) ||
-          (
-            exprType->isFunction &&
-            !exprType->isRawFunction
           )
         );
       };
@@ -289,15 +291,17 @@ namespace Talta {
         return (
           exprType->indirectionLevel() < 1 &&
           (
-            !exprType->isNative &&
             (
-              !exprType->klass ||
-              (exprType->klass && !exprType->klass->isStructure)
+              !exprType->isNative &&
+              (
+                !exprType->klass ||
+                (exprType->klass && !exprType->klass->isStructure)
+              )
+            ) ||
+            (
+              exprType->isFunction &&
+              !exprType->isRawFunction
             )
-          ) ||
-          (
-            exprType->isFunction &&
-            !exprType->isRawFunction
           )
         );
       };
