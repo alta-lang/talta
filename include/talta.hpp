@@ -202,7 +202,7 @@ namespace Talta {
       void headerPredeclaration(std::string def, std::string mangledModuleName, bool includeAll = true);
       std::vector<uint8_t> convertTypeModifiers(std::vector<uint8_t> altaModifiers);
       void hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, bool inHeader = false, bool includeVariables = true);
-      std::vector<std::shared_ptr<Ceetah::AST::Expression>> processArgs(std::vector<ALTACORE_VARIANT<std::pair<std::shared_ptr<AltaCore::AST::ExpressionNode>, std::shared_ptr<AltaCore::DH::ExpressionNode>>, std::vector<std::pair<std::shared_ptr<AltaCore::AST::ExpressionNode>, std::shared_ptr<AltaCore::DH::ExpressionNode>>>>> adjustedArguments, std::vector<std::tuple<std::string, std::shared_ptr<AltaCore::DET::Type>, bool, std::string>> func);
+      std::vector<std::shared_ptr<Ceetah::AST::Expression>> processArgs(std::vector<ALTACORE_VARIANT<std::pair<std::shared_ptr<AltaCore::AST::ExpressionNode>, std::shared_ptr<AltaCore::DH::ExpressionNode>>, std::vector<std::pair<std::shared_ptr<AltaCore::AST::ExpressionNode>, std::shared_ptr<AltaCore::DH::ExpressionNode>>>>> adjustedArguments, std::vector<std::tuple<std::string, std::shared_ptr<AltaCore::DET::Type>, bool, std::string>> func, AltaCore::Errors::Position* position = nullptr);
       void stackBookkeepingStart(std::shared_ptr<AltaCore::DET::Scope> scope);
       void stackBookkeepingStop(std::shared_ptr<AltaCore::DET::Scope> scope);
       std::shared_ptr<Ceetah::AST::Expression> doCopyCtor(std::shared_ptr<Ceetah::AST::Expression> transpiled, std::shared_ptr<AltaCore::AST::ExpressionNode> expr, std::shared_ptr<AltaCore::DH::ExpressionNode> info, bool* didCopy = nullptr);
@@ -213,7 +213,7 @@ namespace Talta {
       void insertExportDefinition(std::string def);
       void saveExportDefinitions(bool inHeader = true);
       void restoreExportDefinitions(bool inHeader = true);
-      std::shared_ptr<Ceetah::AST::Expression> cast(std::shared_ptr<Ceetah::AST::Expression> expr, std::shared_ptr<AltaCore::DET::Type> source, std::shared_ptr<AltaCore::DET::Type> dest, bool copy, CopyInfo additionalCopyInfo, bool manual = false);
+      std::shared_ptr<Ceetah::AST::Expression> cast(std::shared_ptr<Ceetah::AST::Expression> expr, std::shared_ptr<AltaCore::DET::Type> source, std::shared_ptr<AltaCore::DET::Type> dest, bool copy, CopyInfo additionalCopyInfo, bool manual = false, AltaCore::Errors::Position* position = nullptr);
       inline CopyInfo additionalCopyInfo(std::shared_ptr<AltaCore::AST::Node> node, std::shared_ptr<AltaCore::DH::Node> info) const {
         using ANT = AltaCore::AST::NodeType;
         namespace AAST = AltaCore::AST;
@@ -385,22 +385,21 @@ namespace Talta {
       static const ALTACORE_MAP<AltaCore::AST::NodeType, CoroutineMemberFunction> transpilationMethods;
       const Coroutine::FunctionType boundTranspile = bind(&CTranspiler::transpile);
     public:
-      std::shared_ptr<Ceetah::AST::RootNode> cRoot = nullptr;
       std::shared_ptr<Ceetah::AST::RootNode> hRoot = nullptr;
       std::shared_ptr<Ceetah::AST::RootNode> dRoot = nullptr;
       std::shared_ptr<AltaCore::DET::Module> currentModule = nullptr;
       std::shared_ptr<AltaCore::DET::Scope> currentScope = nullptr;
-      Ceetah::Builder source = Ceetah::Builder(cRoot);
+      Ceetah::Builder source = Ceetah::Builder(nullptr);
       Ceetah::Builder header = Ceetah::Builder(hRoot);
       Ceetah::Builder definitions = Ceetah::Builder(dRoot);
       Ceetah::Builder* target = &source;
-      std::vector<std::pair<std::shared_ptr<AltaCore::DET::ScopeItem>, std::shared_ptr<Ceetah::AST::RootNode>>> generics;
+      std::vector<std::tuple<bool, std::shared_ptr<AltaCore::DET::ScopeItem>, std::shared_ptr<Ceetah::AST::RootNode>>> cRoots;
     protected:
       std::shared_ptr<Ceetah::AST::Type> size_tType = source.createType("size_t", { { Ceetah::AST::TypeModifierFlag::Constant } });
     public:
       void transpile(std::shared_ptr<AltaCore::AST::RootNode> altaRoot);
   };
-  ALTACORE_MAP<std::string, std::tuple<std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<Ceetah::AST::RootNode>, std::vector<std::shared_ptr<Ceetah::AST::RootNode>>, std::vector<std::shared_ptr<AltaCore::DET::ScopeItem>>, std::shared_ptr<AltaCore::DET::Module>>> recursivelyTranspileToC(std::shared_ptr<AltaCore::AST::RootNode> altaRoot, CTranspiler* transpiler = nullptr);
+  ALTACORE_MAP<std::string, std::tuple<std::shared_ptr<Ceetah::AST::RootNode>, std::shared_ptr<Ceetah::AST::RootNode>, std::vector<std::shared_ptr<Ceetah::AST::RootNode>>, std::vector<std::shared_ptr<AltaCore::DET::ScopeItem>>, std::vector<bool>, std::shared_ptr<AltaCore::DET::Module>>> recursivelyTranspileToC(std::shared_ptr<AltaCore::AST::RootNode> altaRoot, CTranspiler* transpiler = nullptr);
 };
 
 #endif // TALTA_TALTA_HPP
