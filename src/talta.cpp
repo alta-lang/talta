@@ -88,6 +88,7 @@ namespace Talta {
     { ANT::LambdaExpression, &CTranspiler::transpileLambdaExpression },
     { ANT::SpecialFetchExpression, &CTranspiler::transpileSpecialFetchExpression },
     { ANT::ClassOperatorDefinitionStatement, &CTranspiler::transpileClassOperatorDefinitionStatement },
+    { ANT::EnumerationDefinitionNode, &CTranspiler::transpileEnumerationDefinitionStatement },
   };
 
   const CTranspiler::CopyInfo CTranspiler::defaultCopyInfo = std::make_pair(false, false);
@@ -287,6 +288,8 @@ std::string Talta::headerMangle(AltaCore::DET::ScopeItem* item, bool fullName) {
     return "_ALTA_VARIABLE_" + mangleName(item, fullName);
   } else if (nodeType == NodeType::Class) {
     return "_ALTA_CLASS_" + mangleName(item, fullName);
+  } else if (nodeType == NodeType::Namespace) {
+    return "_ALTA_NS_" + mangleName(item, fullName);
   } else {
     return "";
   }
@@ -6315,6 +6318,128 @@ auto Talta::CTranspiler::transpileClassOperatorDefinitionStatement(Coroutine& co
     return co.finalYield();
   }
 };
+
+auto Talta::CTranspiler::transpileEnumerationDefinitionStatement(Coroutine& co) -> Coroutine& {
+  using Iterator = decltype(AAST::EnumerationDefinitionNode::members)::iterator;
+  auto [node, _info] = co.arguments();
+  auto enumer = std::dynamic_pointer_cast<AAST::EnumerationDefinitionNode>(node);
+  auto info = std::dynamic_pointer_cast<DH::EnumerationDefinitionNode>(_info);
+
+  if (co.iteration() == 0) {
+    source.insertFunctionDefinition(mangleName(info->ns.get()) + "_init", {}, source.createType("void"), true);
+    co.save<Iterator>(enumer->members.begin());
+    return co.yield();
+  } else if (co.counter() < enumer->members.size() * 2) {
+    auto [iter] = co.load<Iterator>();
+    auto [name, value] = *iter;
+    auto var = info->memberVariables[name];
+    auto det = info->memberDetails[name];
+    auto op = info->memberOperators[name];
+    bool requiresInit = !info->underlyingType->type->isNative && info->underlyingType->type->pointerLevel() == 0;
+    if (co.counter() % 2 == 0) {
+      auto cType = transpileType(info->underlyingType->type.get());
+      auto varName = mangleName(var.get());
+      headerPredeclaration(headerMangle(var.get()), mangleName(currentModule.get()));
+      header.insertVariableDeclaration(cType, varName);
+      header.exitInsertionPoint();
+      auto tmp = popToGlobal();
+      source.insertVariableDefinition(cType, varName, source.createArrayLiteral({ source.createIntegerLiteral(0) }));
+      pushFromGlobal(tmp);
+      co.increment();
+      if (value) {
+        co.save(iter);
+        return co.await(boundTranspile, value, det);
+      } else if (op) {
+        co.save(iter);
+        return co.yield();
+      } else {
+        co.save(iter);
+        return co.yield();
+      }
+    } else {
+      auto varName = mangleName(var.get());
+      if (value) {
+        auto transpiled = co.result<CExpression>();
+        source.insertExpressionStatement(
+          source.createAssignment(
+            source.createFetch(
+              varName
+            ),
+            cast(
+              transpiled,
+              DET::Type::getUnderlyingType(det.get()),
+              info->underlyingType->type,
+              false,
+              additionalCopyInfo(value, det),
+              false,
+              &value->position
+            )
+          )
+        );
+      } else {
+        std::string prevName;
+        if (co.counter() > 1) {
+          auto prev = enumer->members.begin();
+          for (size_t i = 0; i < co.counter() / 2 - 1; ++i, ++prev);
+          prevName = mangleName(info->memberVariables[prev->first].get());
+        }
+        if (op) {
+          source.insertExpressionStatement(
+            source.createAssignment(
+              source.createFetch(
+                varName
+              ),
+              cast(
+                co.counter() < 2
+                  ? source.createFunctionCall(
+                      source.createFetch("_cn_" + mangleName(op.get())),
+                      {
+                        source.createIntegerLiteral(0),
+                      }
+                    )
+                  : source.createFunctionCall(
+                      source.createFetch(mangleName(op.get())),
+                      {
+                        source.createPointer(source.createFetch(prevName)),
+                        source.createIntegerLiteral(1),
+                      }
+                    )
+                  ,
+                op->returnType,
+                info->underlyingType->type,
+                false,
+                std::make_pair(false, true),
+                false,
+                &enumer->position
+              )
+            )
+          );
+        } else {
+          source.insertExpressionStatement(
+            source.createAssignment(
+              source.createFetch(
+                varName
+              ),
+              co.counter() < 2
+              ? std::dynamic_pointer_cast<CAST::Expression>(source.createIntegerLiteral(0))
+              : source.createBinaryOperation(
+                  CAST::OperatorType::Addition,
+                  source.createFetch(prevName),
+                  source.createIntegerLiteral(1)
+                )
+            )
+          );
+        }
+      }
+      co.increment();
+      co.save(++iter);
+      return co.yield();
+    }
+  } else {
+    source.exitInsertionPoint();
+    return co.finalYield();
+  }
+};
 // </transpilation-coroutines>
 
 std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::transpile(std::shared_ptr<AltaCore::AST::Node> _node, std::shared_ptr<AltaCore::DH::Node> __info) {
@@ -6792,6 +6917,16 @@ void Talta::CTranspiler::transpile(std::shared_ptr<AltaCore::AST::RootNode> alta
           )
         );
       }
+    } else if (stmt->nodeType() == AAST::NodeType::EnumerationDefinitionNode) {
+      auto enumer = std::dynamic_pointer_cast<AAST::EnumerationDefinitionNode>(stmt);
+      auto info = std::dynamic_pointer_cast<DH::EnumerationDefinitionNode>(stmtInfo);
+
+      source.insertExpressionStatement(
+        source.createFunctionCall(
+          source.createFetch(mangleName(info->ns.get()) + "_init"),
+          {}
+        )
+      );
     }
   }
 

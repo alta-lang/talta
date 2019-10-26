@@ -27,6 +27,7 @@ namespace Talta {
         bool _finalized = false;
         ALTACORE_OPTIONAL<std::tuple<Args...>> _arguments = ALTACORE_NULLOPT;
         std::queue<ALTACORE_ANY> saved;
+        size_t _counter = 0;
       public:
         Coroutine(ManagerType& _manager, FunctionType function):
           manager(_manager),
@@ -44,6 +45,22 @@ namespace Talta {
         };
         inline std::tuple<Args...> arguments() const {
           return *_arguments;
+        };
+        inline size_t counter() const {
+          return _counter;
+        };
+
+        inline Coroutine& increment(size_t step = 1) {
+          _counter += step;
+          return *this;
+        };
+        inline Coroutine& decrement(size_t step = 1) {
+          _counter -= step;
+          return *this;
+        };
+        inline Coroutine& resetCounter() {
+          _counter = 0;
+          return *this;
         };
 
         template<class V>
@@ -380,6 +397,7 @@ namespace Talta {
       Coroutine& transpileLambdaExpression(Coroutine& co);
       Coroutine& transpileSpecialFetchExpression(Coroutine& co);
       Coroutine& transpileClassOperatorDefinitionStatement(Coroutine& co);
+      Coroutine& transpileEnumerationDefinitionStatement(Coroutine& co);
       // </transpilation-methods>
 
       static const ALTACORE_MAP<AltaCore::AST::NodeType, CoroutineMemberFunction> transpilationMethods;
