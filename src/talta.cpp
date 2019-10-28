@@ -5589,21 +5589,20 @@ auto Talta::CTranspiler::transpileControlDirective(Coroutine& co) -> Coroutine& 
   auto ctrl = std::dynamic_pointer_cast<AAST::ControlDirective>(node);
   auto loopScope = AltaCore::Util::findLoopScope(_info->inputScope);
 
-
   if (!loopScope) {
     throw std::runtime_error("no loop found for loop control directive");
   }
 
+  source.insertBlock();
+  stackBookkeepingStop(loopScope);
+
   if (!ctrl->isBreak) {
-    source.insertBlock();
     source.insertExpressionStatement(source.createFetch("_ALTA_" + mangleName(loopScope.get()) + "_NEXT_ITERATION"));
   }
 
   source.insertExpressionStatement(source.createIntegerLiteral(ctrl->isBreak ? "break" : "continue"));
 
-  if (!ctrl->isBreak) {
-    source.exitInsertionPoint();
-  }
+  source.exitInsertionPoint();
 
   return co.finalYield();
 };
