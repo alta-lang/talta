@@ -337,6 +337,7 @@ namespace Talta {
         source.insertionPoint->moveForward();
         source.insertionPoint = point;
       };
+      void initCaptures(std::shared_ptr<AltaCore::DH::ClassDefinitionNode> info);
 
       // <coroutine-helpers>
       auto bind(const CoroutineMemberFunction function) -> Coroutine::FunctionType;

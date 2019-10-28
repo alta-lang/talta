@@ -97,6 +97,71 @@ namespace Talta {
   ALTACORE_MAP<std::string, std::string> friendlyNames;
 };
 
+void Talta::CTranspiler::initCaptures(std::shared_ptr<DH::ClassDefinitionNode> info) {
+  for (size_t i = 0; i < info->toReference.size(); i++) {
+    auto ref = info->toReference[i];
+    auto pointed = ref->type->point();
+    source.insertVariableDefinition(
+      transpileType(pointed.get()),
+      mangleName(ref.get()),
+      source.createCast(
+        source.createDereference(
+          source.createBinaryOperation(
+            CAST::OperatorType::Addition,
+            source.createAccessor(
+              source.createAccessor(
+                source.createDereference(
+                  source.createFetch("_Alta_self")
+                ),
+                "_Alta_capture_class_state"
+              ),
+              "references"
+            ),
+            source.createIntegerLiteral(i)
+          )
+        ),
+        transpileType(pointed.get())
+      )
+    );
+  }
+
+  for (size_t i = 0; i < info->toCopy.size(); i++) {
+    auto pointed = info->toCopy[i]->type->point();
+    CExpression expr = source.createCast(
+      source.createDereference(
+        source.createBinaryOperation(
+          CAST::OperatorType::Addition,
+          source.createAccessor(
+            source.createAccessor(
+              source.createDereference(
+                source.createFetch("_Alta_self")
+              ),
+              "_Alta_capture_class_state"
+            ),
+            "copies"
+          ),
+          source.createIntegerLiteral(i)
+        )
+      ),
+      pointed->isNative ? source.createType("_Alta_wrapper", { { CAST::TypeModifierFlag::Pointer } }) : transpileType(pointed.get())
+    );
+    if (pointed->isNative) {
+      expr = source.createCast(
+        source.createAccessor(
+          source.createDereference(expr),
+          "value"
+        ),
+        transpileType(pointed.get())
+      );
+    }
+    source.insertVariableDefinition(
+      transpileType(pointed.get()),
+      mangleName(info->toCopy[i].get()),
+      expr
+    );
+  }
+};
+
 std::vector<std::shared_ptr<Ceetah::AST::Expression>> Talta::CTranspiler::processArgs(std::vector<ALTACORE_VARIANT<std::pair<std::shared_ptr<AltaCore::AST::ExpressionNode>, std::shared_ptr<AltaCore::DH::ExpressionNode>>, std::vector<std::pair<std::shared_ptr<AltaCore::AST::ExpressionNode>, std::shared_ptr<AltaCore::DH::ExpressionNode>>>>> adjustedArguments, std::vector<std::tuple<std::string, std::shared_ptr<AltaCore::DET::Type>, bool, std::string>> parameters, AltaCore::Errors::Position* position) {
   namespace CAST = Ceetah::AST;
   namespace AAST = AltaCore::AST;
@@ -2054,6 +2119,10 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
         );
       }
 
+      if (info->function->isMethod) {
+        initCaptures(info->function->parentClassType->klass->info.lock());
+      }
+
       stackBookkeepingStart(info->function->scope);
 
       for (size_t i = 0; i < info->function->parameterVariables.size(); i++) {
@@ -2715,7 +2784,7 @@ auto Talta::CTranspiler::transpileFetch(Coroutine& co) -> Coroutine& {
     cFetch = source.createDereference(cFetch);
   }
 
-  if (info->referencesOutsideLambda) {
+  if (info->referencesOutsideLambda || info->referencesOutsideCaptureClass) {
     cFetch = source.createDereference(cFetch);
   }
 
@@ -3299,6 +3368,7 @@ auto Talta::CTranspiler::transpileConditionalExpression(Coroutine& co) -> Corout
     return co.finalYield(result);
   }
 };
+
 auto Talta::CTranspiler::transpileClassDefinitionNode(Coroutine& co) -> Coroutine& {
   auto [node, _info] = co.arguments();
   auto aClass = std::dynamic_pointer_cast<AAST::ClassDefinitionNode>(node);
@@ -3324,6 +3394,326 @@ auto Talta::CTranspiler::transpileClassDefinitionNode(Coroutine& co) -> Coroutin
       auto mod = AltaCore::Util::getModule(info->klass->parentScope.lock().get()).lock();
       auto mangledModName = mangleName(mod.get());
 
+      if (info->klass->isCaptureClass()) {
+        auto tmp = popToGlobal();
+        hoist(info->klass);
+        pushFromGlobal(tmp);
+        source.insertBlock();
+        source.insertExpressionStatement(
+          source.createAssignment(
+            source.createFetch(mangleName(info->klass.get()) + "_captured_state"),
+            source.createFunctionCall(
+              source.createFetch("malloc"),
+              {
+                source.createSizeof(
+                  source.createType("_Alta_lambda_state")
+                )
+              }
+            )
+          )
+        );
+
+        auto stateFetch = source.createDereference(
+          source.createFetch(
+            mangleName(info->klass.get()) + "_captured_state"
+          )
+        );
+
+        std::vector<CExpression> copyItems;
+        std::vector<CExpression> referenceItems;
+
+        for (auto& item: info->toCopy) {
+          copyItems.push_back(
+            source.createCast(
+              source.createPointer(
+                source.createFetch(mangleName(item.get()))
+              ),
+              source.createType("void", { { CAST::TypeModifierFlag::Pointer } })
+            )
+          );
+        }
+
+        for (auto& item: info->toReference) {
+          referenceItems.push_back(
+            source.createCast(
+              source.createPointer(
+                source.createFetch(mangleName(item.get()))
+              ),
+              source.createType("void", { { CAST::TypeModifierFlag::Pointer } })
+            )
+          );
+        }
+
+        if (copyItems.size() == 0) {
+          copyItems.push_back(source.createFetch("NULL"));
+        }
+
+        if (referenceItems.size() == 0) {
+          referenceItems.push_back(source.createFetch("NULL"));
+        }
+
+        auto voidArrayType = source.createType("void", { { CAST::TypeModifierFlag::Pointer } });
+        voidArrayType->arraySize = SIZE_MAX;
+
+        source.insertVariableDefinition(
+          source.createType("void", { { CAST::TypeModifierFlag::Pointer }, { CAST::TypeModifierFlag::Pointer } }),
+          "copiesInput",
+          source.createArrayLiteral(copyItems, voidArrayType)
+        );
+        source.insertVariableDefinition(
+          source.createType("void", { { CAST::TypeModifierFlag::Pointer }, { CAST::TypeModifierFlag::Pointer } }),
+          "referencesInput",
+          source.createArrayLiteral(referenceItems, voidArrayType)
+        );
+        source.insertVariableDefinition(
+          source.createType("size_t", { { CAST::TypeModifierFlag::Pointer } }),
+          "counterMalloc",
+          source.createFunctionCall(source.createFetch("malloc"), {
+            source.createSizeof(source.createType("size_t")),
+          })
+        );
+        source.insertVariableDefinition(
+          source.createType("_Alta_object", { { CAST::TypeModifierFlag::Pointer }, { CAST::TypeModifierFlag::Pointer } }),
+          "copiesMalloc",
+          source.createFunctionCall(source.createFetch("malloc"), {
+            source.createBinaryOperation(
+              CAST::OperatorType::Multiplication,
+              source.createIntegerLiteral(info->toCopy.size()),
+              source.createSizeof(source.createType("_Alta_object", { { CAST::TypeModifierFlag::Pointer } }))
+            ),
+          })
+        );
+        source.insertVariableDefinition(
+          source.createType("void", { { CAST::TypeModifierFlag::Pointer }, { CAST::TypeModifierFlag::Pointer } }),
+          "referencesMalloc",
+          source.createFunctionCall(source.createFetch("malloc"), {
+            source.createBinaryOperation(
+              CAST::OperatorType::Multiplication,
+              source.createIntegerLiteral(info->toReference.size()),
+              source.createSizeof(source.createType("void", { { CAST::TypeModifierFlag::Pointer } }))
+            ),
+          })
+        );
+
+        source.insertExpressionStatement(
+          source.createAssignment(
+            source.createDereference(source.createFetch("counterMalloc")),
+            source.createIntegerLiteral(0)
+          )
+        );
+
+        source.insertExpressionStatement(
+          source.createUnaryOperation(
+            CAST::UOperatorType::PreIncrement,
+            source.createDereference(source.createFetch("counterMalloc"))
+          )
+        );
+
+        for (size_t i = 0; i < info->toCopy.size(); i++) {
+          auto& curr = info->toCopy[i];
+          auto elmPtr = source.createBinaryOperation(
+            CAST::OperatorType::Addition,
+            source.createFetch("copiesMalloc"),
+            source.createIntegerLiteral(i)
+          );
+          auto elm = source.createDereference(elmPtr);
+          source.insertExpressionStatement(
+            source.createAssignment(
+              elm,
+              source.createFunctionCall(source.createFetch("malloc"), {
+                source.createSizeof(curr->type->isNative ? source.createType("_Alta_wrapper") : transpileType(curr->type.get())),
+              })
+            )
+          );
+          if (curr->type->isNative) {
+            auto wrapper = source.createDereference(
+              source.createDereference(
+                source.createCast(
+                  elmPtr,
+                  source.createType("_Alta_wrapper", { { CAST::TypeModifierFlag::Pointer }, { CAST::TypeModifierFlag::Pointer } })
+                )
+              )
+            );
+            source.insertExpressionStatement(
+              source.createAssignment(
+                source.createAccessor(
+                  wrapper,
+                  "objectType"
+                ),
+                source.createFetch("_Alta_object_type_wrapper")
+              )
+            );
+            source.insertExpressionStatement(
+              source.createAssignment(
+                source.createAccessor(
+                  wrapper,
+                  "value"
+                ),
+                source.createFunctionCall(source.createFetch("malloc"), {
+                  source.createSizeof(transpileType(curr->type.get())),
+                })
+              )
+            );
+            source.insertExpressionStatement(
+              source.createAssignment(
+                source.createDereference(
+                  source.createCast(
+                    source.createAccessor(
+                      wrapper,
+                      "value"
+                    ),
+                    transpileType(curr->type->point().get())
+                  )
+                ),
+                source.createDereference(
+                  source.createCast(
+                    source.createDereference(
+                      source.createBinaryOperation(
+                        CAST::OperatorType::Addition,
+                        source.createFetch("copiesInput"),
+                        source.createIntegerLiteral(i)
+                      )
+                    ),
+                    transpileType(curr->type->point().get())
+                  )
+                )
+              )
+            );
+            source.insertExpressionStatement(
+              source.createAssignment(
+                source.createAccessor(
+                  wrapper,
+                  "destructor"
+                ),
+                source.createFetch("NULL")
+              )
+            );
+          } else {
+            source.insertExpressionStatement(
+              source.createAssignment(
+                source.createDereference(
+                  source.createCast(
+                    source.createDereference(elmPtr),
+                    transpileType(curr->type->point().get())
+                  )
+                ),
+                doCopyCtor(
+                  source.createDereference(
+                    source.createCast(
+                      source.createDereference(
+                        source.createBinaryOperation(
+                          CAST::OperatorType::Addition,
+                          source.createFetch("copiesInput"),
+                          source.createIntegerLiteral(i)
+                        )
+                      ),
+                      transpileType(curr->type->point().get())
+                    )
+                  ),
+                  curr->type,
+                  defaultCopyInfo
+                )
+              )
+            );
+          }
+        }
+
+        source.insertExpressionStatement(
+          source.createFunctionCall(source.createFetch("memcpy"), {
+            source.createFetch("referencesMalloc"),
+            source.createFetch("referencesInput"),
+            source.createBinaryOperation(
+              CAST::OperatorType::Multiplication,
+              source.createIntegerLiteral(info->toReference.size()),
+              source.createSizeof(source.createType("void", { { CAST::TypeModifierFlag::Pointer } }))
+            )
+          })
+        );
+
+        source.insertExpressionStatement(
+          source.createAssignment(
+            source.createAccessor(
+              stateFetch,
+              "referenceCount"
+            ),
+            source.createFetch("counterMalloc")
+          )
+        );
+
+        source.insertExpressionStatement(
+          source.createAssignment(
+            source.createAccessor(
+              stateFetch,
+              "copyCount"
+            ),
+            source.createIntegerLiteral(info->toCopy.size())
+          )
+        );
+
+        source.insertExpressionStatement(
+          source.createAssignment(
+            source.createAccessor(
+              stateFetch,
+              "referenceBlockCount"
+            ),
+            source.createIntegerLiteral(info->toReference.size())
+          )
+        );
+
+        source.insertExpressionStatement(
+          source.createAssignment(
+            source.createAccessor(
+              stateFetch,
+              "copies"
+            ),
+            source.createFetch("copiesMalloc")
+          )
+        );
+
+        source.insertExpressionStatement(
+          source.createAssignment(
+            source.createAccessor(
+              stateFetch,
+              "references"
+            ),
+            source.createFetch("referencesMalloc")
+          )
+        );
+
+        source.insertVariableDefinition(
+          source.createType("_Alta_wrapper"),
+          mangleName(info->klass.get()) + "_captured_state_wrapper",
+          source.createArrayLiteral({
+            source.createFetch("_Alta_object_type_wrapper"),
+            source.createFetch(mangleName(info->klass.get()) + "_captured_state"),
+            source.createFetch("_Alta_release_capture_class_state_cache"),
+          })
+        );
+
+        source.insertExpressionStatement(
+          source.createFunctionCall(
+            source.createFetch("_Alta_object_stack_push"),
+            {
+              source.createPointer(
+                source.createAccessor(
+                  source.createFetch("_Alta_global_runtime"),
+                  "local"
+                )
+              ),
+              source.createCast(
+                source.createPointer(
+                  source.createFetch(
+                    mangleName(info->klass.get()) + "_captured_state_wrapper"
+                  )
+                ),
+                source.createType("_Alta_object", { { CAST::TypeModifierFlag::Pointer } })
+              ),
+            }
+          )
+        );
+        source.exitInsertionPoint();
+      }
+
       //if (info->klass->genericArguments.size() > 0) {
         auto root = std::make_shared<CAST::RootNode>();
         isGeneric = info->klass->genericArguments.size() > 0;
@@ -3336,9 +3726,24 @@ auto Talta::CTranspiler::transpileClassDefinitionNode(Coroutine& co) -> Coroutin
       auto alwaysImport = alwaysImportTable.find(aClass->id) != alwaysImportTable.end();
       headerPredeclaration("_ALTA_CLASS_" + mangledClassName, alwaysImport ? "" : mangledModName, !isGeneric);
 
+      if (info->klass->isCaptureClass()) {
+        header.insertVariableDeclaration(
+          source.createType("_Alta_lambda_state", { { CAST::TypeModifierFlag::Pointer } }),
+          mangleName(info->klass.get()) + "_captured_state"
+        );
+        source.insertVariableDefinition(
+          source.createType("_Alta_lambda_state", { { CAST::TypeModifierFlag::Pointer } }),
+          mangleName(info->klass.get()) + "_captured_state",
+          source.createFetch("NULL")
+        );
+      }
+
       std::vector<std::pair<std::string, std::shared_ptr<CAST::Type>>> members;
       members.emplace_back("objectType", source.createType("_Alta_object_type"));
       members.emplace_back("_Alta_class_info_struct", source.createType("_Alta_class_info"));
+      if (info->klass->isCaptureClass()) {
+        members.emplace_back("_Alta_capture_class_state", source.createType("_Alta_lambda_state"));
+      }
       for (auto& parent: info->klass->parents) {
         auto mangledParent = mangleName(parent.get());
         members.emplace_back(mangledParent, source.createType(mangledParent));
@@ -3515,6 +3920,44 @@ auto Talta::CTranspiler::transpileClassDefinitionNode(Coroutine& co) -> Coroutin
         ),
         source.createStringLiteral("")
       ));
+
+      source.insertExpressionStatement(source.createAssignment(
+        source.createAccessor(
+          infoStruct,
+          "isCaptureClass"
+        ),
+        source.createIntegerLiteral(info->klass->isCaptureClass() ? 1 : 0)
+      ));
+
+      if (info->klass->isCaptureClass()) {
+        source.insertConditionalStatement(
+          source.createFetch(mangledClassName + "_captured_state")
+        );
+        source.insertBlock();
+        source.insertExpressionStatement(source.createAssignment(
+          source.createAccessor(
+            source.createDereference(source.createFetch("_Alta_self")),
+            "_Alta_capture_class_state"
+          ),
+          source.createDereference(source.createFetch(mangledClassName + "_captured_state"))
+        ));
+        source.insertExpressionStatement(
+          source.createUnaryOperation(
+            CAST::UOperatorType::PreIncrement,
+            source.createDereference(
+              source.createAccessor(
+                source.createAccessor(
+                  source.createDereference(source.createFetch("_Alta_self")),
+                  "_Alta_capture_class_state"
+                ),
+                "referenceCount"
+              )
+            )
+          )
+        );
+        source.exitInsertionPoint();
+        source.exitInsertionPoint();
+      }
 
       std::shared_ptr<CAST::Expression> dtor = nullptr;
       if (info->klass->destructor) {
@@ -4051,6 +4494,60 @@ auto Talta::CTranspiler::transpileClassSpecialMethodDefinitionStatement(Coroutin
           }
         }
       }
+
+      if (info->isCopyConstructor && info->klass->isCaptureClass()) {
+        auto other = source.createDereference(source.createFetch(mangleName(constr->parameterVariables[0].get())));
+        source.insertConditionalStatement(
+          source.createAccessor(
+            source.createAccessor(
+              source.createDereference(source.createFetch("_Alta_self")),
+              "_Alta_capture_class_state"
+            ),
+            "referenceCount"
+          )
+        );
+        source.insertBlock();
+        source.insertExpressionStatement(
+          source.createUnaryOperation(
+            CAST::UOperatorType::PreDecrement,
+            source.createDereference(
+              source.createAccessor(
+                source.createAccessor(
+                  source.createDereference(source.createFetch("_Alta_self")),
+                  "_Alta_capture_class_state"
+                ),
+                "referenceCount"
+              )
+            )
+          )
+        );
+        source.insertExpressionStatement(source.createAssignment(
+          source.createAccessor(
+            source.createDereference(source.createFetch("_Alta_self")),
+            "_Alta_capture_class_state"
+          ),
+          source.createAccessor(
+            other,
+            "_Alta_capture_class_state"
+          )
+        ));
+        source.insertExpressionStatement(
+          source.createUnaryOperation(
+            CAST::UOperatorType::PreIncrement,
+            source.createDereference(
+              source.createAccessor(
+                source.createAccessor(
+                  source.createDereference(source.createFetch("_Alta_self")),
+                  "_Alta_capture_class_state"
+                ),
+                "referenceCount"
+              )
+            )
+          )
+        );
+        source.exitInsertionPoint();
+        source.exitInsertionPoint();
+      }
     } else if (isFrom) {
       source.insertVariableDefinition(ret, "__Alta_self", source.createArrayLiteral({ source.createIntegerLiteral(0) }));
       source.insertVariableDefinition(retPtr, "_Alta_self", source.createPointer(source.createFetch("__Alta_self")));
@@ -4208,6 +4705,8 @@ auto Talta::CTranspiler::transpileClassSpecialMethodDefinitionStatement(Coroutin
       }
     }
 
+    initCaptures(info->klass->info.lock());
+
     co.save(constr, isCtor, mangledClassName, mangledName, ret, retPtr, params, isDtor, isFrom, isTo);
     return co.yield();
   } else if (co.iteration() - 1 < special->body->statements.size()) {
@@ -4244,6 +4743,22 @@ auto Talta::CTranspiler::transpileClassSpecialMethodDefinitionStatement(Coroutin
     if (isCtor) {
       source.insertReturnDirective(source.createFetch("_Alta_self"));
     } else if (isDtor) {
+      if (info->klass->isCaptureClass()) {
+        source.insertExpressionStatement(
+          source.createFunctionCall(
+            source.createFetch("_Alta_release_state"),
+            {
+              source.createPointer(
+                source.createAccessor(
+                  source.createDereference(source.createFetch("_Alta_self")),
+                  "_Alta_capture_class_state"
+                )
+              )
+            }
+          )
+        );
+      }
+
       for (auto& var: info->klass->members) {
         doDtor(
           source.createAccessor(
@@ -6279,6 +6794,8 @@ auto Talta::CTranspiler::transpileClassOperatorDefinitionStatement(Coroutine& co
     }
 
     source.insertFunctionDefinition(mangledFuncName, cParams, returnType);
+
+    initCaptures(info->method->parentClassType->klass->info.lock());
 
     stackBookkeepingStart(info->method->scope);
 
