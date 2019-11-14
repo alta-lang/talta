@@ -267,6 +267,13 @@ namespace Talta {
           canCopy = !det->operatorMethod;
           canTempify = !canCopy;
         }
+        if (type == ANT::YieldExpression) {
+          auto yield = std::dynamic_pointer_cast<AAST::YieldExpression>(node);
+          auto det = std::dynamic_pointer_cast<DH::YieldExpression>(info);
+
+          canCopy = true;
+          canTempify = false;
+        }
         return std::make_pair(
           (
             type != ANT::ClassInstantiationExpression &&
@@ -399,10 +406,55 @@ namespace Talta {
       Coroutine& transpileSpecialFetchExpression(Coroutine& co);
       Coroutine& transpileClassOperatorDefinitionStatement(Coroutine& co);
       Coroutine& transpileEnumerationDefinitionStatement(Coroutine& co);
+      Coroutine& transpileYieldExpression(Coroutine& co);
       // </transpilation-methods>
 
       static const ALTACORE_MAP<AltaCore::AST::NodeType, CoroutineMemberFunction> transpilationMethods;
       const Coroutine::FunctionType boundTranspile = bind(&CTranspiler::transpile);
+
+      ALTACORE_MAP<std::string, size_t> tempVarIDs;
+
+      size_t generatorScopeCount = 0;
+      std::shared_ptr<AltaCore::DET::Scope> generatorScope = nullptr;
+
+      struct GeneratorVariable {
+        std::string name;
+        std::shared_ptr<AltaCore::DET::Type> type = nullptr;
+        bool destroy = true;
+        std::shared_ptr<AltaCore::DET::Scope> scope = nullptr;
+        bool variable = false;
+        bool onStack = true;
+
+        GeneratorVariable(std::shared_ptr<AltaCore::DET::Scope> _scope, std::string _name, std::shared_ptr<AltaCore::DET::Type> _type, bool _destroy = true):
+          scope(_scope),
+          name(_name),
+          type(_type),
+          destroy(_destroy)
+          {};
+      };
+
+      bool inGenerator = false;
+      std::vector<GeneratorVariable> generatorStack;
+      std::stack<std::pair<size_t, size_t>> generatorLoopScopes;
+
+      void loadGenerator(bool reload = false);
+      void pushGeneratorVariable(std::string name, std::shared_ptr<AltaCore::DET::Type> type, bool destroy = true);
+      void pushGeneratorVariable(std::string name, std::shared_ptr<AltaCore::DET::Type> type, std::shared_ptr<Ceetah::AST::Expression> init, bool destroy = true);
+      void pushGeneratorScope(std::shared_ptr<AltaCore::DET::Scope> scope);
+      void destroyGeneratorScope(std::shared_ptr<AltaCore::DET::Scope> scope);
+      void popGeneratorScope(std::shared_ptr<AltaCore::DET::Scope> scope);
+      void toFunctionRoot();
+
+      std::shared_ptr<Ceetah::AST::Expression> fetchTemp(std::string tmpName) {
+        if (inGenerator) {
+          return source.createDereference(source.createFetch(tmpName));
+        } else {
+          return source.createFetch(tmpName);
+        }
+      };
+      std::string newTempName() {
+        return mangleName(currentScope.get()) + "_temp_var_" + std::to_string(tempVarIDs[currentScope->id]++);
+      };
     public:
       std::shared_ptr<Ceetah::AST::RootNode> hRoot = nullptr;
       std::shared_ptr<Ceetah::AST::RootNode> dRoot = nullptr;
