@@ -2347,6 +2347,14 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
             source.createIntegerLiteral(0)
           )
         );
+        if (info->function->isMethod) {
+          source.insertExpressionStatement(
+            source.createAssignment(
+              source.createAccessor((source.createFetch("_Alta_generator")), "self"),
+              source.createFetch("_Alta_self")
+            )
+          );
+        }
         source.insertVariableDefinition(source.createType("size_t"), "offset", source.createIntegerLiteral(0));
         for (auto& var: info->function->parameterVariables) {
           source.insertExpressionStatement(
@@ -2596,6 +2604,19 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
         toFunctionRoot();
         source.insertionPoint->scrollToStart();
 
+        if (info->function->isMethod) {
+          source.insertVariableDefinition(
+            transpileType(info->function->parentClassType.get()),
+            "_Alta_self",
+            source.createAccessor(
+              source.createDereference(
+                source.createFetch("_Alta_generator")
+              ),
+              "self"
+            )
+          );
+        }
+
         auto offset = newTempName();
         source.insertVariableDefinition(
           source.createType("char", { { CAST::TypeModifierFlag::Pointer } }),
@@ -2724,6 +2745,7 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
             {"index", header.createType("size_t")},
             {mangleName(info->generator->scope->items[0].get()), header.createType("_Alta_bool")},
             {"parameters", header.createType("void", { { CAST::TypeModifierFlag::Pointer } })},
+            {"self", header.createType("_Alta_basic_class", { { CAST::TypeModifierFlag::Pointer } })},
           });
           header.insertTypeDefinition(mangledGenName, header.createType("_s_" + mangledGenName, {}, true));
           header.insertFunctionDeclaration(mangleName(info->generator->scope->items[1].get()), {
