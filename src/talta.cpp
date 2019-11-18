@@ -6214,8 +6214,12 @@ auto Talta::CTranspiler::transpileRangedForLoopStatement(Coroutine& co) -> Corou
       return co.await(boundTranspile, loop->start, info->start);
     } else if (co.iteration() == 1) {
       auto mangledCounter = mangleName(info->counter.get());
-      pushGeneratorVariable(mangledCounter, info->counterType->type, co.result<CExpression>());
-      generatorLoopScopes.push(std::make_pair(generatorScopeCount + 1, generatorScopeCount + 3));
+      if (info->end) {
+        pushGeneratorVariable(mangledCounter, info->counterType->type, co.result<CExpression>());
+      } else {
+        pushGeneratorVariable("_Alta_iterator_" + mangledCounter, info->generatorType, co.result<CExpression>());
+      }
+      generatorLoopScopes.push(std::make_pair(generatorScopeCount + (info->end ? 1 : 0), generatorScopeCount + 3));
       co.save(generatorScopeCount);
       source.insertExpressionStatement(
         source.createAssignment(
@@ -6232,34 +6236,59 @@ auto Talta::CTranspiler::transpileRangedForLoopStatement(Coroutine& co) -> Corou
       source.insertBlock();
       loadGenerator();
       generatorScopeCount += 4;
-      return co.await(boundTranspile, loop->end, info->end);
+      if (info->end) {
+        return co.await(boundTranspile, loop->end, info->end);
+      } else {
+        return co.yield();
+      }
     } else if (co.iteration() == 2) {
       auto mangledCounter = mangleName(info->counter.get());
       auto [orig] = co.load<size_t>();
-      CAST::OperatorType comparator = CAST::OperatorType::LessThan;
-      if (loop->decrement) {
-        if (loop->inclusive) {
-          comparator = CAST::OperatorType::GreaterThanOrEqualTo;
+      if (info->end) {
+        CAST::OperatorType comparator = CAST::OperatorType::LessThan;
+        if (loop->decrement) {
+          if (loop->inclusive) {
+            comparator = CAST::OperatorType::GreaterThanOrEqualTo;
+          } else {
+            comparator = CAST::OperatorType::GreaterThan;
+          }
         } else {
-          comparator = CAST::OperatorType::GreaterThan;
+          if (loop->inclusive) {
+            comparator = CAST::OperatorType::LessThanOrEqualTo;
+          } else {
+            comparator = CAST::OperatorType::LessThan;
+          }
         }
-      } else {
-        if (loop->inclusive) {
-          comparator = CAST::OperatorType::LessThanOrEqualTo;
-        } else {
-          comparator = CAST::OperatorType::LessThan;
-        }
-      }
-      source.insertConditionalStatement(
-        source.createUnaryOperation(
-          CAST::UOperatorType::Not,
-          source.createBinaryOperation(
-            comparator,
-            fetchTemp(mangledCounter),
-            co.result<CExpression>()
+        source.insertConditionalStatement(
+          source.createUnaryOperation(
+            CAST::UOperatorType::Not,
+            source.createBinaryOperation(
+              comparator,
+              fetchTemp(mangledCounter),
+              co.result<CExpression>()
+            )
           )
-        )
-      );
+        );
+      } else {
+        source.insertConditionalStatement(
+          source.createUnaryOperation(
+            CAST::UOperatorType::Not,
+            info->done->nodeType() == DET::NodeType::Function
+              ? source.createFunctionCall(
+                  source.createFetch(mangleName(info->done.get())),
+                  {
+                    source.createPointer(source.createFetch("_Alta_iterator_" + mangledCounter)),
+                  }
+                )
+              : std::dynamic_pointer_cast<CAST::Expression>(
+                  source.createAccessor(
+                    "_Alta_iterator_" + mangledCounter,
+                    mangleName(info->done.get())
+                  )
+                )
+          )
+        );
+      }
       source.insertBlock();
       source.insertExpressionStatement(
         source.createAssignment(
@@ -6283,37 +6312,61 @@ auto Talta::CTranspiler::transpileRangedForLoopStatement(Coroutine& co) -> Corou
         )
       );
       source.insertGoto('_' + std::to_string(orig + 2));
-      toFunctionRoot();
-      source.insertLabel('_' + std::to_string(orig + 1));
-      source.insertBlock();
-      loadGenerator();
+      if (info->end) {
+        toFunctionRoot();
+        source.insertLabel('_' + std::to_string(orig + 1));
+        source.insertBlock();
+        loadGenerator();
 
-      source.insertExpressionStatement(
-        source.createAssignment(
-          fetchTemp(mangledCounter),
-          source.createBinaryOperation(
-            (loop->decrement) ? CAST::OperatorType::Subtraction : CAST::OperatorType::Addition,
+        source.insertExpressionStatement(
+          source.createAssignment(
             fetchTemp(mangledCounter),
-            source.createIntegerLiteral(1)
+            source.createBinaryOperation(
+              (loop->decrement) ? CAST::OperatorType::Subtraction : CAST::OperatorType::Addition,
+              fetchTemp(mangledCounter),
+              source.createIntegerLiteral(1)
+            )
           )
-        )
-      );
-      source.insertExpressionStatement(
-        source.createAssignment(
-          source.createAccessor(
-            source.createDereference(source.createFetch("_Alta_generator")),
-            "index"
-          ),
-          source.createIntegerLiteral(orig)
-        )
-      );
-      source.insertGoto('_' + std::to_string(orig));
+        );
+        source.insertExpressionStatement(
+          source.createAssignment(
+            source.createAccessor(
+              source.createDereference(source.createFetch("_Alta_generator")),
+              "index"
+            ),
+            source.createIntegerLiteral(orig)
+          )
+        );
+        source.insertGoto('_' + std::to_string(orig));
+      }
       toFunctionRoot();
       source.insertLabel('_' + std::to_string(orig + 2));
       source.insertBlock();
       loadGenerator();
       co.save(orig);
       pushGeneratorScope(info->scope);
+      if (!info->end) {
+        pushGeneratorVariable(
+          mangledCounter,
+          info->counterType->type,
+          cast(
+            source.createFunctionCall(
+              source.createFetch(mangleName(info->next.get())),
+              {
+                source.createPointer(
+                  source.createFetch("_Alta_iterator_" + mangledCounter)
+                ),
+              }
+            ),
+            info->next->returnType,
+            info->counterType->type,
+            false,
+            std::make_pair(false, false),
+            false,
+            &loop->start->position
+          )
+        );
+      }
       return co.await(boundTranspile, loop->body, info->body);
     } else {
       auto [orig] = co.load<size_t>();
@@ -6327,7 +6380,7 @@ auto Talta::CTranspiler::transpileRangedForLoopStatement(Coroutine& co) -> Corou
           source.createIntegerLiteral(orig + 1)
         )
       );
-      source.insertGoto('_' + std::to_string(orig + 1));
+      source.insertGoto('_' + std::to_string(info->end ? orig + 1 : orig));
       toFunctionRoot();
       source.insertLabel('_' + std::to_string(orig + 3));
       source.insertBlock();
@@ -6343,53 +6396,131 @@ auto Talta::CTranspiler::transpileRangedForLoopStatement(Coroutine& co) -> Corou
     } else if (co.iteration() == 1) {
       auto mangledCounter = mangleName(info->counter.get());
 
-      source.insertVariableDefinition(
-        transpileType(info->counterType->type.get()),
-        mangledCounter,
-        co.result<CExpression>()
-      );
+      if (info->end) {
+        source.insertVariableDefinition(
+          transpileType(info->counterType->type.get()),
+          mangledCounter,
+          co.result<CExpression>()
+        );
+      } else {
+        source.insertVariableDefinition(
+          transpileType(info->generatorType.get()),
+          "_Alta_iterator_" + mangledCounter,
+          co.result<CExpression>()
+        );
+      }
 
-      auto inc = source.createAssignment(
-        source.createFetch(mangledCounter),
-        source.createBinaryOperation(
-          (loop->decrement) ? CAST::OperatorType::Subtraction : CAST::OperatorType::Addition,
-          source.createFetch(mangledCounter),
-          source.createIntegerLiteral(1)
-        )
+      source.insertPreprocessorDefinition(
+        "_ALTA_" + mangleName(info->scope.get()) + "_NEXT_ITERATION",
+        info->end
+          ? source.createAssignment(
+              source.createFetch(mangledCounter),
+              source.createBinaryOperation(
+                (loop->decrement) ? CAST::OperatorType::Subtraction : CAST::OperatorType::Addition,
+                source.createFetch(mangledCounter),
+                source.createIntegerLiteral(1)
+              )
+            )->toString()
+          : ""
       );
-
-      source.insertPreprocessorDefinition("_ALTA_" + mangleName(info->scope.get()) + "_NEXT_ITERATION", inc->toString());
 
       co.save(mangledCounter);
-      return co.await(boundTranspile, loop->end, info->end);
+      if (info->end) {
+        return co.await(boundTranspile, loop->end, info->end);
+      } else {
+        return co.yield();
+      }
     } else if (co.iteration() == 2) {
       auto [mangledCounter] = co.load<std::string>();
 
-      CAST::OperatorType comparator = CAST::OperatorType::LessThan;
-      if (loop->decrement) {
-        if (loop->inclusive) {
-          comparator = CAST::OperatorType::GreaterThanOrEqualTo;
+      if (info->end) {
+        CAST::OperatorType comparator = CAST::OperatorType::LessThan;
+        if (loop->decrement) {
+          if (loop->inclusive) {
+            comparator = CAST::OperatorType::GreaterThanOrEqualTo;
+          } else {
+            comparator = CAST::OperatorType::GreaterThan;
+          }
         } else {
-          comparator = CAST::OperatorType::GreaterThan;
+          if (loop->inclusive) {
+            comparator = CAST::OperatorType::LessThanOrEqualTo;
+          } else {
+            comparator = CAST::OperatorType::LessThan;
+          }
         }
+
+        source.insertWhileLoop(
+          source.createBinaryOperation(
+            comparator,
+            source.createFetch(mangledCounter),
+            co.result<CExpression>()
+          )
+        );
       } else {
-        if (loop->inclusive) {
-          comparator = CAST::OperatorType::LessThanOrEqualTo;
-        } else {
-          comparator = CAST::OperatorType::LessThan;
-        }
+        source.insertWhileLoop(
+          source.createUnaryOperation(
+            CAST::UOperatorType::Not,
+            info->done->nodeType() == DET::NodeType::Function
+              ? source.createFunctionCall(
+                  source.createFetch(mangleName(info->done.get())),
+                  {
+                    source.createPointer(source.createFetch("_Alta_iterator_" + mangledCounter)),
+                  }
+                )
+              : std::dynamic_pointer_cast<CAST::Expression>(
+                  source.createAccessor(
+                    "_Alta_iterator_" + mangledCounter,
+                    mangleName(info->done.get())
+                  )
+                )
+          )
+        );
       }
 
-      source.insertWhileLoop(
-        source.createBinaryOperation(
-          comparator,
-          source.createFetch(mangledCounter),
-          co.result<CExpression>()
-        )
-      );
       source.insertBlock();
+      stackBookkeepingStart(info->scope);
+      if (!info->end) {
+        source.insertVariableDefinition(
+          transpileType(info->counterType->type.get()),
+          mangledCounter,
+          cast(
+            source.createFunctionCall(
+              source.createFetch(mangleName(info->next.get())),
+              {
+                source.createPointer(
+                  source.createFetch("_Alta_iterator_" + mangledCounter)
+                ),
+              }
+            ),
+            info->next->returnType,
+            info->counterType->type,
+            false,
+            std::make_pair(false, false),
+            false,
+            &loop->start->position
+          )
+        );
+        if (currentScope->noRuntime && canPush(info->counterType->type)) {
+          source.insertExpressionStatement(
+            source.createFunctionCall(
+              source.createFetch("_Alta_object_stack_push"),
+              {
+                source.createPointer(source.createFetch("_Alta_global_runtime.local")),
+                source.createCast(
+                  source.createPointer(source.createFetch(mangledCounter)),
+                  source.createType(
+                    "_Alta_object",
+                    { { Ceetah::AST::TypeModifierFlag::Pointer } }
+                  )
+                ),
+              }
+            )
+          );
+        }
+      }
       return co.await(boundTranspile, loop->body, info->body);
     } else {
+      stackBookkeepingStop(info->scope);
       source.insertExpressionStatement(source.createFetch("_ALTA_" + mangleName(info->scope.get()) + "_NEXT_ITERATION"));
       source.exitInsertionPoint();
       source.exitInsertionPoint();
