@@ -561,23 +561,25 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
         {"self", transpileType(type->point().get())},
       }, transpileType(type.get()), true);
       target.insertVariableDefinition(transpileType(type.get()), "result", target.createDereference(target.createFetch("self")));
-      bool didCopy = false;
-      auto copied = doCopyCtor(target.createAccessor(target.createDereference(target.createFetch("self")), "target"), other, defaultCopyInfo, &didCopy);
-      if (didCopy) {
-        target.insertConditionalStatement(
-          target.createAccessor(target.createDereference(target.createFetch("self")), "present")
-        );
-        target.insertBlock();
-        
-        target.insertExpressionStatement(
-          target.createAssignment(
-            target.createAccessor(target.createFetch("result"), "target"),
-            copied
-          )
-        );
+      if (other->indirectionLevel() == 0) {
+        bool didCopy = false;
+        auto copied = doCopyCtor(target.createAccessor(target.createDereference(target.createFetch("self")), "target"), other, defaultCopyInfo, &didCopy);
+        if (didCopy) {
+          target.insertConditionalStatement(
+            target.createAccessor(target.createDereference(target.createFetch("self")), "present")
+          );
+          target.insertBlock();
+          
+          target.insertExpressionStatement(
+            target.createAssignment(
+              target.createAccessor(target.createFetch("result"), "target"),
+              copied
+            )
+          );
 
-        target.exitInsertionPoint();
-        target.exitInsertionPoint();
+          target.exitInsertionPoint();
+          target.exitInsertionPoint();
+        }
       }
       target.insertReturnDirective(target.createFetch("result"));
       target.exitInsertionPoint();
@@ -593,7 +595,7 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
           transpileType(type->point().get())
         )
       );
-      if (canDestroy(other)) {
+      if (other->indirectionLevel() == 0 && canDestroy(other)) {
         target.insertConditionalStatement(
           target.createAccessor(target.createDereference(target.createFetch("self")), "present")
         );
@@ -925,6 +927,22 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
             target.insert(cmp);
           }
           ++i;
+          CExpression copy = target.createAccessor(
+            target.createAccessor(
+              target.createDereference(
+                target.createFetch("other")
+              ),
+              "members"
+            ),
+            "_m_" + mangledItem
+          );
+          if (item->indirectionLevel() == 0) {
+            copy = doCopyCtor(
+              copy,
+              item,
+              defaultCopyInfo
+            );
+          }
           target.insertExpressionStatement(
             target.createAssignment(
               target.createAccessor(
@@ -934,19 +952,7 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
                 ),
                 "_m_" + mangledItem
               ),
-              doCopyCtor(
-                target.createAccessor(
-                  target.createAccessor(
-                    target.createDereference(
-                      target.createFetch("other")
-                    ),
-                    "members"
-                  ),
-                  "_m_" + mangledItem
-                ),
-                item,
-                defaultCopyInfo
-              )
+              copy
             )
           );
         }
@@ -962,7 +968,7 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
       }, target.createType("void"), true);
       i = 0;
       for (auto& item: type->unionOf) {
-        if (canDestroy(item)) {
+        if (item->indirectionLevel() == 0 && canDestroy(item)) {
           auto mangledItem = mangleType(item.get());
           auto cmp = target.createBinaryOperation(
             Ceetah::AST::OperatorType::EqualTo,
@@ -2283,7 +2289,7 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
         }
       }
 
-      auto returnType = info->function->isGenerator ? transpileType(info->function->generatorReturnType.get()) : transpileType(info->function->returnType.get());
+      auto returnType = info->function->isGenerator ? transpileType(info->function->generatorReturnType->makeOptional().get()) : transpileType(info->function->returnType.get());
 
       hoist(info->function, false);
 
@@ -2660,9 +2666,9 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
           source.insertGoto('_' + std::to_string(i));
         }
         source.enterConditionalUltimatum();
-        source.insertExpressionStatement(
+        source.insertReturnDirective(
           source.createFunctionCall(
-            source.createFetch("_Alta_generator_invalid_index"),
+            source.createFetch("_Alta_make_empty_" + cTypeNameify(info->function->generatorReturnType->makeOptional().get())),
             {}
           )
         );
@@ -2737,6 +2743,7 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
         }
         hoist(info->function->returnType, true);
         if (info->function->isGenerator) {
+          hoist(std::dynamic_pointer_cast<DET::Function>(info->generator->scope->items[1])->returnType, true);
           auto mangledGenName = mangleName(info->generator.get());
           header.insertStructureDefinition("_s_" + mangledGenName, {
             {"stack", header.createType("void", { { CAST::TypeModifierFlag::Pointer } })},
@@ -2878,7 +2885,24 @@ auto Talta::CTranspiler::transpileReturnDirectiveNode(Coroutine& co) -> Coroutin
       );
     }
 
-    if (isVoid) {
+
+    if (!retDir->expression && inGenerator) {
+      source.insertReturnDirective(
+        source.createFunctionCall(
+          source.createFetch("_Alta_make_empty_" + cTypeNameify(info->parentFunction->generatorReturnType->makeOptional().get())),
+          {}
+        )
+      );
+    } else if (inGenerator) {
+      source.insertReturnDirective(
+        source.createFunctionCall(
+          source.createFetch("_Alta_make_" + cTypeNameify(info->parentFunction->generatorReturnType->makeOptional().get())),
+          {
+            source.createFetch(tmpName),
+          }
+        )
+      );
+    } else if (isVoid) {
       source.insertReturnDirective(transpiled);
     } else {
       source.insertReturnDirective(expr ? source.createFetch(tmpName) : nullptr);
@@ -6218,6 +6242,15 @@ auto Talta::CTranspiler::transpileRangedForLoopStatement(Coroutine& co) -> Corou
         pushGeneratorVariable(mangledCounter, info->counterType->type, co.result<CExpression>());
       } else {
         pushGeneratorVariable("_Alta_iterator_" + mangledCounter, info->generatorType, co.result<CExpression>());
+        pushGeneratorVariable(
+          "_Alta_iterator_maybe_" + mangledCounter,
+          info->next->returnType,
+          source.createFunctionCall(
+            source.createFetch("_Alta_make_empty_" + cTypeNameify(info->next->returnType.get())),
+            {}
+          ),
+          false
+        );
       }
       generatorLoopScopes.push(std::make_pair(generatorScopeCount + (info->end ? 1 : 0), generatorScopeCount + 3));
       co.save(generatorScopeCount);
@@ -6269,39 +6302,20 @@ auto Talta::CTranspiler::transpileRangedForLoopStatement(Coroutine& co) -> Corou
             )
           )
         );
-      } else {
-        source.insertConditionalStatement(
-          source.createUnaryOperation(
-            CAST::UOperatorType::Not,
-            info->done->nodeType() == DET::NodeType::Function
-              ? source.createFunctionCall(
-                  source.createFetch(mangleName(info->done.get())),
-                  {
-                    source.createPointer(source.createFetch("_Alta_iterator_" + mangledCounter)),
-                  }
-                )
-              : std::dynamic_pointer_cast<CAST::Expression>(
-                  source.createAccessor(
-                    "_Alta_iterator_" + mangledCounter,
-                    mangleName(info->done.get())
-                  )
-                )
+        source.insertBlock();
+        source.insertExpressionStatement(
+          source.createAssignment(
+            source.createAccessor(
+              source.createDereference(source.createFetch("_Alta_generator")),
+              "index"
+            ),
+            source.createIntegerLiteral(orig + 3)
           )
         );
+        source.insertGoto('_' + std::to_string(orig + 3));
+        source.exitInsertionPoint();
+        source.exitInsertionPoint();
       }
-      source.insertBlock();
-      source.insertExpressionStatement(
-        source.createAssignment(
-          source.createAccessor(
-            source.createDereference(source.createFetch("_Alta_generator")),
-            "index"
-          ),
-          source.createIntegerLiteral(orig + 3)
-        )
-      );
-      source.insertGoto('_' + std::to_string(orig + 3));
-      source.exitInsertionPoint();
-      source.exitInsertionPoint();
       source.insertExpressionStatement(
         source.createAssignment(
           source.createAccessor(
@@ -6346,10 +6360,9 @@ auto Talta::CTranspiler::transpileRangedForLoopStatement(Coroutine& co) -> Corou
       co.save(orig);
       pushGeneratorScope(info->scope);
       if (!info->end) {
-        pushGeneratorVariable(
-          mangledCounter,
-          info->counterType->type,
-          cast(
+        source.insertExpressionStatement(
+          source.createAssignment(
+            source.createFetch("_Alta_iterator_maybe_" + mangledCounter),
             source.createFunctionCall(
               source.createFetch(mangleName(info->next.get())),
               {
@@ -6357,8 +6370,38 @@ auto Talta::CTranspiler::transpileRangedForLoopStatement(Coroutine& co) -> Corou
                   source.createFetch("_Alta_iterator_" + mangledCounter)
                 ),
               }
+            )
+          )
+        );
+        source.insertConditionalStatement(
+          source.createUnaryOperation(
+            CAST::UOperatorType::Not,
+            source.createAccessor("_Alta_iterator_maybe_" + mangledCounter, "present")
+          )
+        );
+        source.insertBlock();
+        source.insertExpressionStatement(
+          source.createAssignment(
+            source.createAccessor(
+              source.createDereference(source.createFetch("_Alta_generator")),
+              "index"
             ),
-            info->next->returnType,
+            source.createIntegerLiteral(orig + 3)
+          )
+        );
+        source.insertGoto('_' + std::to_string(orig + 3));
+        source.exitInsertionPoint();
+        source.exitInsertionPoint();
+        CExpression tgt = source.createAccessor("_Alta_iterator_maybe_" + mangledCounter, "target");
+        for (size_t i = 0; i < info->next->returnType->optionalTarget->referenceLevel(); ++i) {
+          tgt = source.createDereference(tgt);
+        }
+        pushGeneratorVariable(
+          mangledCounter,
+          info->counterType->type,
+          cast(
+            tgt,
+            info->next->returnType->optionalTarget,
             info->counterType->type,
             false,
             std::make_pair(false, false),
@@ -6407,6 +6450,14 @@ auto Talta::CTranspiler::transpileRangedForLoopStatement(Coroutine& co) -> Corou
           transpileType(info->generatorType.get()),
           "_Alta_iterator_" + mangledCounter,
           co.result<CExpression>()
+        );
+        source.insertVariableDefinition(
+          transpileType(info->next->returnType.get()),
+          "_Alta_iterator_maybe_" + mangledCounter,
+          source.createFunctionCall(
+            source.createFetch("_Alta_make_empty_" + cTypeNameify(info->next->returnType.get())),
+            {}
+          )
         );
       }
 
@@ -6458,32 +6509,16 @@ auto Talta::CTranspiler::transpileRangedForLoopStatement(Coroutine& co) -> Corou
         );
       } else {
         source.insertWhileLoop(
-          source.createUnaryOperation(
-            CAST::UOperatorType::Not,
-            info->done->nodeType() == DET::NodeType::Function
-              ? source.createFunctionCall(
-                  source.createFetch(mangleName(info->done.get())),
-                  {
-                    source.createPointer(source.createFetch("_Alta_iterator_" + mangledCounter)),
-                  }
-                )
-              : std::dynamic_pointer_cast<CAST::Expression>(
-                  source.createAccessor(
-                    "_Alta_iterator_" + mangledCounter,
-                    mangleName(info->done.get())
-                  )
-                )
-          )
+          source.createFetch("_Alta_bool_true")
         );
       }
 
       source.insertBlock();
       stackBookkeepingStart(info->scope);
       if (!info->end) {
-        source.insertVariableDefinition(
-          transpileType(info->counterType->type.get()),
-          mangledCounter,
-          cast(
+        source.insertExpressionStatement(
+          source.createAssignment(
+            source.createFetch("_Alta_iterator_maybe_" + mangledCounter),
             source.createFunctionCall(
               source.createFetch(mangleName(info->next.get())),
               {
@@ -6491,8 +6526,27 @@ auto Talta::CTranspiler::transpileRangedForLoopStatement(Coroutine& co) -> Corou
                   source.createFetch("_Alta_iterator_" + mangledCounter)
                 ),
               }
-            ),
-            info->next->returnType,
+            )
+          )
+        );
+        source.insertConditionalStatement(
+          source.createUnaryOperation(
+            CAST::UOperatorType::Not,
+            source.createAccessor("_Alta_iterator_maybe_" + mangledCounter, "present")
+          )
+        );
+        source.insertExpressionStatement(source.createIntegerLiteral("break"));
+        source.exitInsertionPoint();
+        CExpression tgt = source.createAccessor("_Alta_iterator_maybe_" + mangledCounter, "target");
+        for (size_t i = 0; i < info->next->returnType->optionalTarget->referenceLevel(); ++i) {
+          tgt = source.createDereference(tgt);
+        }
+        source.insertVariableDefinition(
+          transpileType(info->counterType->type.get()),
+          mangledCounter,
+          cast(
+            tgt,
+            info->next->returnType->optionalTarget,
             info->counterType->type,
             false,
             std::make_pair(false, false),
@@ -8105,7 +8159,14 @@ auto Talta::CTranspiler::transpileYieldExpression(Coroutine& co) -> Coroutine& {
       )
     );
 
-    source.insertReturnDirective(expr ? source.createFetch(tmpName) : nullptr);
+    source.insertReturnDirective(
+      source.createFunctionCall(
+        source.createFetch("_Alta_make_" + cTypeNameify(info->generator->generatorReturnType->makeOptional().get())),
+        {
+          source.createFetch(tmpName),
+        }
+      )
+    );
     toFunctionRoot();
     source.insertLabel('_' + std::to_string(generatorScopeCount++));
     source.insertBlock();
