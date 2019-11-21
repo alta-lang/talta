@@ -3147,7 +3147,7 @@ auto Talta::CTranspiler::transpileAccessor(Coroutine& co) -> Coroutine& {
       auto tmpName = mangleName(info->inputScope.get()) + "_temp_var_" + std::to_string(tempVarIDs[info->inputScope->id]++);
 
       if (inGenerator) {
-        pushGeneratorVariable(tmpName, info->readAccessor->returnType, source.createArrayLiteral({ source.createIntegerLiteral(0) }), !currentScope->noRuntime && canPush(info->readAccessor->returnType));
+        pushGeneratorVariable(tmpName, info->readAccessor->returnType, source.createArrayLiteral({ source.createIntegerLiteral(0) }, transpileType(info->readAccessor->returnType.get())), !currentScope->noRuntime && canPush(info->readAccessor->returnType));
       } else {
         source.insertVariableDefinition(transpileType(info->readAccessor->returnType.get()), tmpName, source.createArrayLiteral({ source.createIntegerLiteral(0) }));
       }
