@@ -5056,7 +5056,25 @@ auto Talta::CTranspiler::transpileClassDefinitionNode(Coroutine& co) -> Coroutin
         auto mangledMemberName = mangleName(memberInfo->varDef->variable.get());
         if (waiting) {
           if (member->varDef->initializationExpression) {
-            source.insertExpressionStatement(source.createAssignment(source.createAccessor(source.createDereference(source.createFetch("_Alta_self")), mangledMemberName), co.result<CExpression>()));
+            source.insertExpressionStatement(
+              source.createAssignment(
+                source.createAccessor(
+                  source.createDereference(
+                    source.createFetch("_Alta_self")
+                  ),
+                  mangledMemberName
+                ),
+                cast(
+                  co.result<CExpression>(),
+                  DET::Type::getUnderlyingType(memberInfo->varDef->initializationExpression.get()),
+                  memberInfo->varDef->variable->type,
+                  false,
+                  additionalCopyInfo(member->varDef->initializationExpression, memberInfo->varDef->initializationExpression),
+                  false,
+                  &member->varDef->initializationExpression->position
+                )
+              )
+            );
           }
           co.save(isGeneric, genericIndex, loopIteration);
           co.saveAny(sbc);
@@ -6326,10 +6344,10 @@ auto Talta::CTranspiler::transpileRangedForLoopStatement(Coroutine& co) -> Corou
         )
       );
       source.insertGoto('_' + std::to_string(orig + 2));
+      toFunctionRoot();
+      source.insertLabel('_' + std::to_string(orig + 1));
+      source.insertBlock();
       if (info->end) {
-        toFunctionRoot();
-        source.insertLabel('_' + std::to_string(orig + 1));
-        source.insertBlock();
         loadGenerator();
 
         source.insertExpressionStatement(
@@ -6352,6 +6370,10 @@ auto Talta::CTranspiler::transpileRangedForLoopStatement(Coroutine& co) -> Corou
           )
         );
         source.insertGoto('_' + std::to_string(orig));
+      } else {
+        source.insertExpressionStatement(source.createFunctionCall(source.createFetch("_Alta_uncaught_error"), {
+          source.createStringLiteral("@RuntimeError@Impossible@InvalidGeneratorIndex")
+        }));
       }
       toFunctionRoot();
       source.insertLabel('_' + std::to_string(orig + 2));
@@ -6362,7 +6384,7 @@ auto Talta::CTranspiler::transpileRangedForLoopStatement(Coroutine& co) -> Corou
       if (!info->end) {
         source.insertExpressionStatement(
           source.createAssignment(
-            source.createFetch("_Alta_iterator_maybe_" + mangledCounter),
+            fetchTemp("_Alta_iterator_maybe_" + mangledCounter),
             source.createFunctionCall(
               source.createFetch(mangleName(info->next.get())),
               {
@@ -6376,7 +6398,7 @@ auto Talta::CTranspiler::transpileRangedForLoopStatement(Coroutine& co) -> Corou
         source.insertConditionalStatement(
           source.createUnaryOperation(
             CAST::UOperatorType::Not,
-            source.createAccessor("_Alta_iterator_maybe_" + mangledCounter, "present")
+            source.createAccessor(fetchTemp("_Alta_iterator_maybe_" + mangledCounter), "present")
           )
         );
         source.insertBlock();
@@ -6392,22 +6414,26 @@ auto Talta::CTranspiler::transpileRangedForLoopStatement(Coroutine& co) -> Corou
         source.insertGoto('_' + std::to_string(orig + 3));
         source.exitInsertionPoint();
         source.exitInsertionPoint();
-        CExpression tgt = source.createAccessor("_Alta_iterator_maybe_" + mangledCounter, "target");
+        CExpression tgt = source.createAccessor(fetchTemp("_Alta_iterator_maybe_" + mangledCounter), "target");
         for (size_t i = 0; i < info->next->returnType->optionalTarget->referenceLevel(); ++i) {
           tgt = source.createDereference(tgt);
+        }
+        auto tgtExpr = cast(
+          tgt,
+          info->next->returnType->optionalTarget,
+          info->counterType->type,
+          false,
+          std::make_pair(false, false),
+          false,
+          &loop->start->position
+        );
+        for (size_t i = 0; i < info->counterType->type->referenceLevel(); ++i) {
+          tgtExpr = source.createPointer(tgtExpr);
         }
         pushGeneratorVariable(
           mangledCounter,
           info->counterType->type,
-          cast(
-            tgt,
-            info->next->returnType->optionalTarget,
-            info->counterType->type,
-            false,
-            std::make_pair(false, false),
-            false,
-            &loop->start->position
-          )
+          tgtExpr
         );
       }
       return co.await(boundTranspile, loop->body, info->body);
@@ -6541,18 +6567,22 @@ auto Talta::CTranspiler::transpileRangedForLoopStatement(Coroutine& co) -> Corou
         for (size_t i = 0; i < info->next->returnType->optionalTarget->referenceLevel(); ++i) {
           tgt = source.createDereference(tgt);
         }
+        auto tgtExpr = cast(
+          tgt,
+          info->next->returnType->optionalTarget,
+          info->counterType->type,
+          false,
+          std::make_pair(false, false),
+          false,
+          &loop->start->position
+        );
+        for (size_t i = 0; i < info->counterType->type->referenceLevel(); ++i) {
+          tgtExpr = source.createPointer(tgtExpr);
+        }
         source.insertVariableDefinition(
           transpileType(info->counterType->type.get()),
           mangledCounter,
-          cast(
-            tgt,
-            info->next->returnType->optionalTarget,
-            info->counterType->type,
-            false,
-            std::make_pair(false, false),
-            false,
-            &loop->start->position
-          )
+          tgtExpr
         );
         if (currentScope->noRuntime && canPush(info->counterType->type)) {
           source.insertExpressionStatement(
