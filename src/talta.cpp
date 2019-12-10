@@ -5803,6 +5803,9 @@ auto Talta::CTranspiler::transpileDereferenceExpression(Coroutine& co) -> Corout
     CExpression result = nullptr;
     if (tgtType->isOptional) {
       result = source.createAccessor(expr, "target");
+      for (size_t i = 0; i < tgtType->optionalTarget->referenceLevel(); ++i) {
+        result = source.createDereference(result);
+      }
     } else {
       result = source.createDereference(expr);
     }
