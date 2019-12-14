@@ -8317,7 +8317,6 @@ void Talta::CTranspiler::transpile(std::shared_ptr<AltaCore::AST::RootNode> alta
   definitions.insertPreprocessorUndefinition("_ALTA_MODULE_ALL_" + mangledModuleName);
   definitions.exitInsertionPoint();
 
-
   definitions.insertPreprocessorConditional("!defined(_ALTA_SAVE_DEFS_" + mangledModuleName + ") && defined(_AMA_WAS_DEFINED_" + mangledModuleName + ")");
   definitions.insertPreprocessorDefinition("_ALTA_MODULE_ALL_" + mangledModuleName);
   definitions.insertPreprocessorUndefinition("_AMA_WAS_DEFINED_" + mangledModuleName);
@@ -8756,6 +8755,11 @@ void Talta::CTranspiler::transpile(std::shared_ptr<AltaCore::AST::RootNode> alta
       auto klass = std::dynamic_pointer_cast<AAST::ClassDefinitionNode>(stmt);
       auto klassInfo = std::dynamic_pointer_cast<DH::ClassDefinitionNode>(stmtInfo);
       for (auto& virtFunc: klassInfo->klass->findAllVirtualFunctions()) {
+        auto currentPoint = popToGlobal();
+        source.insertionPoint->scrollToStart();
+        source.insertPreprocessorDefinition(headerMangle(virtFunc.get()));
+        source.insertPreprocessorInclusion("_ALTA_MODULE_" + mangledModuleName + "_0_INCLUDE_" + mangledModuleName, Ceetah::AST::InclusionType::Computed);
+        pushFromGlobal(currentPoint);
         source.insertExpressionStatement(
           source.createFunctionCall(
             source.createFetch("_Alta_register_virtual_function"),
