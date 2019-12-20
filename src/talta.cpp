@@ -1023,6 +1023,15 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
     auto headerName = headerMangle(item.get());
     target.insertPreprocessorConditional("!defined(" + headerName + ')');
     target.insertPreprocessorDefinition(headerName);
+
+    if (item->nodeType() == AltaCore::DET::NodeType::Class) {
+      if (auto parentScope = item->parentScope.lock()) {
+        if (auto parentFunc = AltaCore::Util::getFunction(parentScope).lock()) {
+          target.insertPreprocessorDefinition(headerMangle(parentFunc.get()));
+        }
+      }
+    }
+
     target.insertPreprocessorInclusion("_ALTA_MODULE_" + mangledParentName + "_0_INCLUDE_" + mangledImportName, Ceetah::AST::InclusionType::Computed);
     target.exitInsertionPoint();
     restoreExportDefinitions(inHeader);
