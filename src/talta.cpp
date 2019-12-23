@@ -4538,8 +4538,8 @@ auto Talta::CTranspiler::transpileClassDefinitionNode(Coroutine& co) -> Coroutin
         hoist(hoistedType, true);
       }
 
-      header.insertStructureDefinition("_s_" + mangledClassName, members);
       header.insertTypeDefinition(mangledClassName, header.createType("_s_" + mangledClassName, {}, true));
+      header.insertStructureDefinition("_s_" + mangledClassName, members);
 
       auto self = header.createType(mangledClassName, { { CAST::TypeModifierFlag::Pointer } });
       auto basicClassType = header.createType("_Alta_basic_class", { { CAST::TypeModifierFlag::Pointer } });

@@ -4,7 +4,8 @@ All the changes for Alta's primary (and currently only) backend, the C transpile
 This project follows [semantic versioning](https://semver.org).
 
 ## [Unreleased]
-Nothing yet.
+ * Many, MANY changes that are TBD (to-be-documented)
+ * Output class typedef definitions before the actual structure definitions (to allow them to store pointers to themselves)
 
 ## [0.8.0] - 2018-12-20
 ### Added
