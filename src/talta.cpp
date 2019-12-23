@@ -4131,11 +4131,16 @@ auto Talta::CTranspiler::transpileConditionalExpression(Coroutine& co) -> Corout
     return co.await(boundTranspile, cond->secondaryResult, info->secondaryResult);
   } else {
     auto [condition, primary] = co.load<CExpression, CExpression>();
+    // for now, just cast to the first result's type
+    // this means we only support conditional expression where both expressions
+    // can be cast to the first type or where they're the same type
+    // in the future, AltaCore will have a function for determining the best common type
+    auto firstType = DET::Type::getUnderlyingType(info->primaryResult.get());
     auto secondary = co.result<CExpression>();
     CExpression result = source.createTernaryOperation(
       cast(condition, DET::Type::getUnderlyingType(info->test.get()), std::make_shared<DET::Type>(DET::NativeType::Bool), false, additionalCopyInfo(cond->test, info->test), false, &cond->test->position),
-      primary,
-      secondary
+      cast(primary, DET::Type::getUnderlyingType(info->primaryResult.get()), firstType, true, additionalCopyInfo(cond->primaryResult, info->primaryResult), false, &cond->primaryResult->position),
+      cast(secondary, DET::Type::getUnderlyingType(info->secondaryResult.get()), firstType, true, additionalCopyInfo(cond->secondaryResult, info->secondaryResult), false, &cond->secondaryResult->position)
     );
     return co.finalYield(result);
   }
