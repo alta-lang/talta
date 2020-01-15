@@ -1775,7 +1775,7 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::cast(std::shared_pt
       }
       result = doParentRetrieval(result, currentType, nextType, &didRetrieval);
       if (!didRetrieval) {
-        throw std::runtime_error("suppossed to be able to do parent retrieval");
+        throw std::runtime_error("supposed to be able to do parent retrieval");
       }
       currentType = nextType;
       additionalCopyInfo = std::make_pair(true, false);
@@ -1792,7 +1792,7 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::cast(std::shared_pt
       }
       result = doChildRetrieval(result, currentType, nextType, &didRetrieval);
       if (!didRetrieval) {
-        throw std::runtime_error("suppossed to be able to do parent retrieval");
+        throw std::runtime_error("supposed to be able to do child retrieval");
       }
       currentType = nextType;
       additionalCopyInfo = std::make_pair(false, false);
