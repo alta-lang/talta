@@ -5803,6 +5803,34 @@ auto Talta::CTranspiler::transpileClassInstantiationExpression(Coroutine& co) ->
       args.push_back(source.createIntegerLiteral(0));
     }
     result = source.createArrayLiteral(args, source.createType(mangleName(info->klass.get()), {}, !info->klass->isTyped));
+    if (info->persistent) {
+      auto tmp = newTempName();
+      source.insertVariableDefinition(
+        source.createType(mangleName(info->klass.get()), std::vector<uint8_t> { (uint8_t)CAST::TypeModifierFlag::Pointer }, !info->klass->isTyped),
+        tmp,
+        source.createFetch("NULL")
+      );
+      result = source.createMultiExpression({
+        source.createAssignment(
+          source.createFetch(tmp),
+          source.createFunctionCall(
+            source.createFetch("malloc"),
+            {
+              source.createSizeof(source.createType(mangleName(info->klass.get()), {}, !info->klass->isTyped)),
+            }
+          )
+        ),
+        source.createAssignment(
+          source.createDereference(
+            source.createFetch(tmp)
+          ),
+          result
+        ),
+        source.createDereference(
+          source.createFetch(tmp)
+        ),
+      });
+    }
   } else {
     std::shared_ptr<CAST::Expression> call = source.createFunctionCall(source.createFetch((info->persistent ? "_cp_" : "_cn_") + mangledCtor), args);
     if (info->persistent) {

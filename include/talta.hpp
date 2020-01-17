@@ -243,7 +243,7 @@ namespace Talta {
           auto cast = std::dynamic_pointer_cast<AAST::CastExpression>(node);
           auto det = std::dynamic_pointer_cast<DH::CastExpression>(info);
 
-          canTempify = det->fromCaster || det->toCaster;
+          canTempify = det->usesFromOrTo;
           canCopy = !canTempify;
         }
         if (type == ANT::BinaryOperation) {
