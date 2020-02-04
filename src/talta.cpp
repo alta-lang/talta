@@ -2872,6 +2872,10 @@ auto Talta::CTranspiler::transpileReturnDirectiveNode(Coroutine& co) -> Coroutin
       source.insertVariableDefinition(transpileType((info->parentFunction->isGenerator ? info->parentFunction->generatorReturnType : info->parentFunction->returnType).get()), tmpName, expr);
     }
 
+    if (isVoid) {
+      source.insertExpressionStatement(transpiled);
+    }
+
     std::shared_ptr<AltaCore::DET::Scope> target = info->inputScope;
     while (target) {
       if (inGenerator) {
@@ -2924,7 +2928,7 @@ auto Talta::CTranspiler::transpileReturnDirectiveNode(Coroutine& co) -> Coroutin
         )
       );
     } else if (isVoid) {
-      source.insertReturnDirective(transpiled);
+      source.insertReturnDirective();
     } else {
       source.insertReturnDirective(expr ? source.createFetch(tmpName) : nullptr);
     }
