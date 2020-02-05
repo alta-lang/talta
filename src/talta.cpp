@@ -532,6 +532,34 @@ void Talta::CTranspiler::headerPredeclaration(std::string def, std::string mangl
   insertExportDefinition(def);
 };
 
+// ugh, why did i have to do this? well, basically, it seems that we're exhausting our
+// stack space. if `hoist` calls a `testInsertion` lambda (or even a function!), a segfault
+// happens which, upon further inspection with a debugger, appears to be caused by a lack of
+// stack space (at least in the debug build of the compiler)
+//
+// for now, this is (hopefully) a successful workaround, but in the future we're going to have
+// to compile each root node in its own thread or something. i honestly dont know right now.
+// hopefully this compiler will last long enough in its current state for it to be able to compile
+// its replacement: the bootstrapped Alta compiler (i.e. `altac` coded in Alta)
+#define TALTA_TEST_INSERTION_PASTE bool testInsertion = true;\
+  auto testInsertionPos = target.insertionPoint->index;\
+  target.insertionPoint->moveBackward();\
+  if (testInsertionPos > 0) {\
+    while (target.insertionPoint->container()[target.insertionPoint->index]->nodeType() == CAST::NodeType::ConditionalPreprocessorDirective) {\
+      if (std::dynamic_pointer_cast<CAST::ConditionalPreprocessorDirective>(target.insertionPoint->container()[target.insertionPoint->index])->test == test) {\
+        target.insertionPoint->index = testInsertionPos;\
+        testInsertion = false;\
+        break;\
+      }\
+      if (target.insertionPoint->index == 0) {\
+        break;\
+      } else {\
+        target.insertionPoint->moveBackward();\
+      }\
+    }\
+    target.insertionPoint->index = testInsertionPos;\
+  }
+
 void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, bool inHeader, bool includeVariables) {
   auto& target = (inHeader ? header : source);
 
@@ -544,128 +572,132 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
       hoist(other, inHeader);
 
       auto def = "_ALTA_OPTIONAL_" + name.substr(15);
-      target.insertPreprocessorConditional("!defined(" + def + ")");
-      target.insertPreprocessorDefinition(def);
-      std::vector<std::pair<std::string, std::shared_ptr<CAST::Type>>> members = {
-        {"objectType", target.createType("_Alta_object_type")},
-        {"present", target.createType("_Alta_bool")},
-        {"destructor", target.createType("_Alta_optional_destructor")},
-      };
-      if (!(*other == DET::Type(DET::NativeType::Void))) {
-        members.push_back({"target", transpileType(other.get())});
-      }
-      target.insertStructureDefinition("_struct_" + name, members);
-      target.insertTypeDefinition(name, target.createType("_struct_" + name, {}, true));
+      auto test = "!defined(" + def + ")";
+      TALTA_TEST_INSERTION_PASTE;
+      if (testInsertion) {
+        target.insertPreprocessorConditional(test);
+        target.insertPreprocessorDefinition(def);
+        std::vector<std::pair<std::string, std::shared_ptr<CAST::Type>>> members = {
+          {"objectType", target.createType("_Alta_object_type")},
+          {"present", target.createType("_Alta_bool")},
+          {"destructor", target.createType("_Alta_optional_destructor")},
+        };
+        if (!(*other == DET::Type(DET::NativeType::Void))) {
+          members.push_back({"target", transpileType(other.get())});
+        }
+        target.insertStructureDefinition("_struct_" + name, members);
+        target.insertTypeDefinition(name, target.createType("_struct_" + name, {}, true));
 
-      target.insertFunctionDefinition("_Alta_copy_" + name, {
-        {"self", transpileType(type->point().get())},
-      }, transpileType(type.get()), true);
-      target.insertVariableDefinition(transpileType(type.get()), "result", target.createDereference(target.createFetch("self")));
-      if (other->indirectionLevel() == 0) {
-        bool didCopy = false;
-        auto copied = doCopyCtor(target.createAccessor(target.createDereference(target.createFetch("self")), "target"), other, defaultCopyInfo, &didCopy);
-        if (didCopy) {
+        target.insertFunctionDefinition("_Alta_copy_" + name, {
+          {"self", transpileType(type->point().get())},
+        }, transpileType(type.get()), true);
+        target.insertVariableDefinition(transpileType(type.get()), "result", target.createDereference(target.createFetch("self")));
+        if (other->indirectionLevel() == 0) {
+          bool didCopy = false;
+          auto copied = doCopyCtor(target.createAccessor(target.createDereference(target.createFetch("self")), "target"), other, defaultCopyInfo, &didCopy);
+          if (didCopy) {
+            target.insertConditionalStatement(
+              target.createAccessor(target.createDereference(target.createFetch("self")), "present")
+            );
+            target.insertBlock();
+            
+            target.insertExpressionStatement(
+              target.createAssignment(
+                target.createAccessor(target.createFetch("result"), "target"),
+                copied
+              )
+            );
+
+            target.exitInsertionPoint();
+            target.exitInsertionPoint();
+          }
+        }
+        target.insertReturnDirective(target.createFetch("result"));
+        target.exitInsertionPoint();
+
+        target.insertFunctionDefinition("_Alta_destroy_" + name, {
+          {"_self", target.createType("_Alta_basic_optional", { { CAST::TypeModifierFlag::Pointer } })},
+        }, target.createType("void"), true);
+        target.insertVariableDefinition(
+          transpileType(type->point().get()),
+          "self",
+          target.createCast(
+            target.createFetch("_self"),
+            transpileType(type->point().get())
+          )
+        );
+        if (other->indirectionLevel() == 0 && canDestroy(other)) {
           target.insertConditionalStatement(
             target.createAccessor(target.createDereference(target.createFetch("self")), "present")
           );
           target.insertBlock();
-          
+
+          auto tgt = target.createAccessor(target.createDereference(target.createFetch("self")), "target");
           target.insertExpressionStatement(
-            target.createAssignment(
-              target.createAccessor(target.createFetch("result"), "target"),
-              copied
-            )
+            doDtor(tgt, other)
           );
 
           target.exitInsertionPoint();
           target.exitInsertionPoint();
         }
-      }
-      target.insertReturnDirective(target.createFetch("result"));
-      target.exitInsertionPoint();
-
-      target.insertFunctionDefinition("_Alta_destroy_" + name, {
-        {"_self", target.createType("_Alta_basic_optional", { { CAST::TypeModifierFlag::Pointer } })},
-      }, target.createType("void"), true);
-      target.insertVariableDefinition(
-        transpileType(type->point().get()),
-        "self",
-        target.createCast(
-          target.createFetch("_self"),
-          transpileType(type->point().get())
-        )
-      );
-      if (other->indirectionLevel() == 0 && canDestroy(other)) {
-        target.insertConditionalStatement(
-          target.createAccessor(target.createDereference(target.createFetch("self")), "present")
-        );
-        target.insertBlock();
-
-        auto tgt = target.createAccessor(target.createDereference(target.createFetch("self")), "target");
         target.insertExpressionStatement(
-          doDtor(tgt, other)
+          target.createAssignment(
+            target.createAccessor(target.createDereference(target.createFetch("self")), "present"),
+            target.createFetch("_Alta_bool_false")
+          )
         );
-
         target.exitInsertionPoint();
+
+        target.insertFunctionDefinition("_Alta_make_" + name, {
+          {"source", transpileType(other.get())},
+        }, transpileType(type.get()), true);
+        target.insertVariableDefinition(transpileType(type.get()), "result", target.createArrayLiteral({ target.createIntegerLiteral(0) }));
+        target.insertExpressionStatement(
+          target.createAssignment(
+            target.createAccessor("result", "present"),
+            target.createFetch("_Alta_bool_true")
+          )
+        );
+        target.insertExpressionStatement(
+          target.createAssignment(
+            target.createAccessor("result", "target"),
+            target.createFetch("source")
+          )
+        );
+        target.insertExpressionStatement(
+          target.createAssignment(
+            target.createAccessor("result", "objectType"),
+            target.createFetch("_Alta_object_type_optional")
+          )
+        );
+        target.insertExpressionStatement(
+          target.createAssignment(
+            target.createAccessor("result", "destructor"),
+            target.createFetch("_Alta_destroy_" + name)
+          )
+        );
+        target.insertReturnDirective(target.createFetch("result"));
+        target.exitInsertionPoint();
+
+        target.insertFunctionDefinition("_Alta_make_empty_" + name, {}, transpileType(type.get()), true);
+        target.insertVariableDefinition(transpileType(type.get()), "result", target.createArrayLiteral({ target.createIntegerLiteral(0) }));
+        target.insertExpressionStatement(
+          target.createAssignment(
+            target.createAccessor("result", "objectType"),
+            target.createFetch("_Alta_object_type_optional")
+          )
+        );
+        target.insertExpressionStatement(
+          target.createAssignment(
+            target.createAccessor("result", "destructor"),
+            target.createFetch("_Alta_destroy_" + name)
+          )
+        );
+        target.insertReturnDirective(target.createFetch("result"));
+        target.exitInsertionPoint();
+
         target.exitInsertionPoint();
       }
-      target.insertExpressionStatement(
-        target.createAssignment(
-          target.createAccessor(target.createDereference(target.createFetch("self")), "present"),
-          target.createFetch("_Alta_bool_false")
-        )
-      );
-      target.exitInsertionPoint();
-
-      target.insertFunctionDefinition("_Alta_make_" + name, {
-        {"source", transpileType(other.get())},
-      }, transpileType(type.get()), true);
-      target.insertVariableDefinition(transpileType(type.get()), "result", target.createArrayLiteral({ target.createIntegerLiteral(0) }));
-      target.insertExpressionStatement(
-        target.createAssignment(
-          target.createAccessor("result", "present"),
-          target.createFetch("_Alta_bool_true")
-        )
-      );
-      target.insertExpressionStatement(
-        target.createAssignment(
-          target.createAccessor("result", "target"),
-          target.createFetch("source")
-        )
-      );
-      target.insertExpressionStatement(
-        target.createAssignment(
-          target.createAccessor("result", "objectType"),
-          target.createFetch("_Alta_object_type_optional")
-        )
-      );
-      target.insertExpressionStatement(
-        target.createAssignment(
-          target.createAccessor("result", "destructor"),
-          target.createFetch("_Alta_destroy_" + name)
-        )
-      );
-      target.insertReturnDirective(target.createFetch("result"));
-      target.exitInsertionPoint();
-
-      target.insertFunctionDefinition("_Alta_make_empty_" + name, {}, transpileType(type.get()), true);
-      target.insertVariableDefinition(transpileType(type.get()), "result", target.createArrayLiteral({ target.createIntegerLiteral(0) }));
-      target.insertExpressionStatement(
-        target.createAssignment(
-          target.createAccessor("result", "objectType"),
-          target.createFetch("_Alta_object_type_optional")
-        )
-      );
-      target.insertExpressionStatement(
-        target.createAssignment(
-          target.createAccessor("result", "destructor"),
-          target.createFetch("_Alta_destroy_" + name)
-        )
-      );
-      target.insertReturnDirective(target.createFetch("result"));
-      target.exitInsertionPoint();
-
-      target.exitInsertionPoint();
     } if (type->isFunction) {
       auto def = "_ALTA_FUNC_PTR_" + name.substr(15);
       auto rawCopy = type->copy();
@@ -675,342 +707,354 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
         def = "_ALTA_FUNC_" + root;
         name = "_Alta_function_" + root;
       }
-      target.insertPreprocessorConditional("!defined(" + def + ")");
-      target.insertPreprocessorDefinition(def);
-      std::vector<std::shared_ptr<Ceetah::AST::Type>> cParams;
-      if (!type->isRawFunction) {
-        hoist(rawCopy, inHeader);
-        cParams.push_back(target.createType("_Alta_lambda_state"));
-      }
-      for (auto& [name, param, isVariable, id]: type->parameters) {
-        auto target = isVariable ? param->point() : param;
-        hoist(param, inHeader);
-        cParams.push_back(transpileType(target.get()));
-      }
-      hoist(type->returnType, inHeader);
-      target.insertTypeDefinition(name, target.createType(transpileType(type->returnType.get()), cParams, mods));
-      if (!type->isRawFunction) {
-        std::vector<std::tuple<std::string, std::shared_ptr<CAST::Type>>> params = {
-          {"func", target.createType("_Alta_basic_function")},
-        };
-        std::vector<CExpression> noStateArgs;
-        std::vector<CExpression> args = { target.createAccessor("func", "state") };
-        for (size_t i = 0; i < type->parameters.size(); i++) {
-          auto paramName = "_param" + std::to_string(i);
-          auto paramFetch = target.createFetch(paramName);
-          params.push_back({paramName, transpileType(std::get<1>(type->parameters[i]).get())});
-          noStateArgs.push_back(paramFetch);
-          args.push_back(paramFetch);
+      auto test = "!defined(" + def + ")";
+      TALTA_TEST_INSERTION_PASTE;
+      if (testInsertion) {
+        target.insertPreprocessorConditional(test);
+        target.insertPreprocessorDefinition(def);
+        std::vector<std::shared_ptr<Ceetah::AST::Type>> cParams;
+        if (!type->isRawFunction) {
+          hoist(rawCopy, inHeader);
+          cParams.push_back(target.createType("_Alta_lambda_state"));
         }
-        target.insertFunctionDefinition("_Alta_call_" + name, params, transpileType(type->returnType.get()), true);
-        auto callExpr = target.createTernaryOperation(
-          target.createBinaryOperation(
-            CAST::OperatorType::NotEqualTo,
-            target.createAccessor("func", "lambda"),
-            target.createFetch("NULL")
-          ),
-          target.createFunctionCall(
-            target.createCast(
+        for (auto& [name, param, isVariable, id]: type->parameters) {
+          auto target = isVariable ? param->point() : param;
+          hoist(param, inHeader);
+          cParams.push_back(transpileType(target.get()));
+        }
+        hoist(type->returnType, inHeader);
+        target.insertTypeDefinition(name, target.createType(transpileType(type->returnType.get()), cParams, mods));
+        if (!type->isRawFunction) {
+          std::vector<std::tuple<std::string, std::shared_ptr<CAST::Type>>> params = {
+            {"func", target.createType("_Alta_basic_function")},
+          };
+          std::vector<CExpression> noStateArgs;
+          std::vector<CExpression> args = { target.createAccessor("func", "state") };
+          for (size_t i = 0; i < type->parameters.size(); i++) {
+            auto paramName = "_param" + std::to_string(i);
+            auto paramFetch = target.createFetch(paramName);
+            params.push_back({paramName, transpileType(std::get<1>(type->parameters[i]).get())});
+            noStateArgs.push_back(paramFetch);
+            args.push_back(paramFetch);
+          }
+          target.insertFunctionDefinition("_Alta_call_" + name, params, transpileType(type->returnType.get()), true);
+          auto callExpr = target.createTernaryOperation(
+            target.createBinaryOperation(
+              CAST::OperatorType::NotEqualTo,
               target.createAccessor("func", "lambda"),
-              target.createType(name)
+              target.createFetch("NULL")
             ),
-            args
-          ),
-          target.createFunctionCall(
-            target.createCast(
-              target.createAccessor("func", "plain"),
-              target.createType(cTypeNameify(rawCopy.get()))
-            ),
-            noStateArgs
-          )
-        );
-        if (*type->returnType == DET::Type(DET::NativeType::Void)) {
-          target.insertExpressionStatement(callExpr);
-        } else {
-          target.insertReturnDirective(callExpr);
-        }
-        target.exitInsertionPoint();
-
-        target.insertFunctionDefinition("_Alta_make_from_plain_" + name, {
-          {"plain", transpileType(rawCopy.get())},
-        }, target.createType("_Alta_basic_function"), true);
-        target.insertVariableDefinition(
-          target.createType("_Alta_basic_function"),
-          "result",
-          target.createArrayLiteral({ target.createIntegerLiteral(0) })
-        );
-
-        target.insertExpressionStatement(
-          target.createAssignment(
-            target.createAccessor(
-              "result",
-              "objectType"
-            ),
-            target.createFetch("_Alta_object_type_function")
-          )
-        );
-
-        target.insertExpressionStatement(
-          target.createAssignment(
-            target.createAccessor(
-              target.createAccessor(
-                "result",
-                "state"
-              ),
-              "referenceCount"
-            ),
-            target.createFetch("NULL")
-          )
-        );
-
-        target.insertExpressionStatement(
-          target.createAssignment(
-            target.createAccessor(
-              target.createAccessor(
-                "result",
-                "state"
-              ),
-              "copyCount"
-            ),
-            target.createIntegerLiteral(0)
-          )
-        );
-
-        target.insertExpressionStatement(
-          target.createAssignment(
-            target.createAccessor(
-              target.createAccessor(
-                "result",
-                "state"
-              ),
-              "referenceBlockCount"
-            ),
-            target.createIntegerLiteral(0)
-          )
-        );
-
-        target.insertExpressionStatement(
-          target.createAssignment(
-            target.createAccessor(
-              target.createAccessor(
-                "result",
-                "state"
-              ),
-              "copies"
-            ),
-            target.createFetch("NULL")
-          )
-        );
-
-        target.insertExpressionStatement(
-          target.createAssignment(
-            target.createAccessor(
-              target.createAccessor(
-                "result",
-                "state"
-              ),
-              "references"
-            ),
-            target.createFetch("NULL")
-          )
-        );
-
-        target.insertExpressionStatement(
-          target.createAssignment(
-            target.createAccessor(
-              "result",
-              "plain"
-            ),
-            target.createFetch("plain")
-          )
-        );
-
-        target.insertExpressionStatement(
-          target.createAssignment(
-            target.createAccessor(
-              "result",
-              "lambda"
-            ),
-            target.createFetch("NULL")
-          )
-        );
-
-        target.insertReturnDirective(target.createFetch("result"));
-        target.exitInsertionPoint();
-
-        target.insertFunctionDefinition("_Alta_copy_" + name, {
-          {"func", target.createType("_Alta_basic_function")},
-        }, target.createType("_Alta_basic_function"), true);
-        target.insertExpressionStatement(
-          target.createUnaryOperation(
-            CAST::UOperatorType::PreIncrement,
-            target.createDereference(target.createAccessor(target.createAccessor("func", "state"), "referenceCount"))
-          )
-        );
-        target.insertReturnDirective(target.createFetch("func"));
-        target.exitInsertionPoint();
-
-        target.insertFunctionDefinition("_Alta_destroy_" + name, {
-          {"func", target.createType("_Alta_basic_function", { { CAST::TypeModifierFlag::Pointer } })},
-        }, target.createType("void"), true);
-        target.insertExpressionStatement(
-          target.createFunctionCall(target.createFetch("_Alta_object_destroy"), {
-            target.createCast(
-              target.createFetch("func"),
-              target.createType("_Alta_object", { { CAST::TypeModifierFlag::Pointer } })
-            ),
-          })
-        );
-        target.exitInsertionPoint();
-      }
-      target.exitInsertionPoint();
-    } else if (type->klass) {
-      auto thatMod = AltaCore::Util::getModule(type->klass->parentScope.lock().get()).lock();
-      auto mangledModName = mangleName(thatMod.get());
-      auto mangledParentName = mangleName(currentModule.get());
-      saveExportDefinitions(inHeader);
-      target.insertPreprocessorDefinition(headerMangle(type->klass.get()));
-      target.insertPreprocessorInclusion("_ALTA_MODULE_" + mangledParentName + "_0_INCLUDE_" + mangledModName, Ceetah::AST::InclusionType::Computed);
-      restoreExportDefinitions(inHeader);
-    } else if (type->isUnion()) {
-      auto mangled = mangleType(type.get());
-      auto def = "_ALTA_UNION_" + name.substr(11);
-      target.insertPreprocessorConditional("!defined(" + def + ")");
-      target.insertPreprocessorDefinition(def);
-      std::string uni = "union _u_" + name + " {\n";
-      for (auto& item: type->unionOf) {
-        hoist(item, inHeader);
-        uni += transpileType(item.get())->toString() + " _m_" + mangleType(item.get()) + ";\n";
-      }
-      uni += "}";
-      target.insertStructureDefinition("_s_" + name, {
-        {"objectType", target.createType("_Alta_object_type")},
-        {"typeName", target.createType("char", { { Ceetah::AST::TypeModifierFlag::Pointer } })},
-        {"destructor", target.createType("_Alta_union_destructor")},
-        {"members", target.createType(uni)},
-      });
-      target.insertTypeDefinition(name, target.createType("_s_" + name, mods, true));
-      target.insertFunctionDefinition("_copy_" + name, {
-        std::make_tuple("other", target.createType(name, { { Ceetah::AST::TypeModifierFlag::Pointer } }))
-      }, target.createType(name), true);
-      target.insertVariableDefinition(
-        target.createType(name),
-        "result",
-        target.createDereference(
-          target.createFetch("other")
-        )
-      );
-      size_t i = 0;
-      for (auto& item: type->unionOf) {
-        if (!item->isNative) {
-          auto mangledItem = mangleType(item.get());
-          auto cmp = target.createBinaryOperation(
-            Ceetah::AST::OperatorType::EqualTo,
             target.createFunctionCall(
-              target.createFetch("strcmp"),
-              {
-                target.createAccessor(
-                  target.createDereference(
-                    target.createFetch("other")
-                  ),
-                  "typeName"
-                ),
-                target.createStringLiteral(mangledItem),
-              }
-            ),
-            target.createIntegerLiteral(0)
-          );
-          if (i == 0) {
-            target.insertConditionalStatement(cmp);
-          } else {
-            target.enterConditionalAlternative(i - 1);
-            target.insert(cmp);
-          }
-          ++i;
-          CExpression copy = target.createAccessor(
-            target.createAccessor(
-              target.createDereference(
-                target.createFetch("other")
+              target.createCast(
+                target.createAccessor("func", "lambda"),
+                target.createType(name)
               ),
-              "members"
+              args
             ),
-            "_m_" + mangledItem
+            target.createFunctionCall(
+              target.createCast(
+                target.createAccessor("func", "plain"),
+                target.createType(cTypeNameify(rawCopy.get()))
+              ),
+              noStateArgs
+            )
           );
-          if (item->indirectionLevel() == 0) {
-            copy = doCopyCtor(
-              copy,
-              item,
-              defaultCopyInfo
-            );
+          if (*type->returnType == DET::Type(DET::NativeType::Void)) {
+            target.insertExpressionStatement(callExpr);
+          } else {
+            target.insertReturnDirective(callExpr);
           }
+          target.exitInsertionPoint();
+
+          target.insertFunctionDefinition("_Alta_make_from_plain_" + name, {
+            {"plain", transpileType(rawCopy.get())},
+          }, target.createType("_Alta_basic_function"), true);
+          target.insertVariableDefinition(
+            target.createType("_Alta_basic_function"),
+            "result",
+            target.createArrayLiteral({ target.createIntegerLiteral(0) })
+          );
+
+          target.insertExpressionStatement(
+            target.createAssignment(
+              target.createAccessor(
+                "result",
+                "objectType"
+              ),
+              target.createFetch("_Alta_object_type_function")
+            )
+          );
+
           target.insertExpressionStatement(
             target.createAssignment(
               target.createAccessor(
                 target.createAccessor(
-                  target.createFetch("result"),
-                  "members"
+                  "result",
+                  "state"
                 ),
-                "_m_" + mangledItem
+                "referenceCount"
               ),
-              copy
+              target.createFetch("NULL")
             )
           );
-        }
-      }
-      if (i > 0) {
-        target.exitInsertionPoint();
-      }
-      target.insertReturnDirective(target.createFetch("result"));
-      target.exitInsertionPoint();
 
-      target.insertFunctionDefinition("_destroy_" + name, {
-        std::make_tuple("self", target.createType(name, { { Ceetah::AST::TypeModifierFlag::Pointer } }))
-      }, target.createType("void"), true);
-      i = 0;
-      for (auto& item: type->unionOf) {
-        if (item->indirectionLevel() == 0 && canDestroy(item)) {
-          auto mangledItem = mangleType(item.get());
-          auto cmp = target.createBinaryOperation(
-            Ceetah::AST::OperatorType::EqualTo,
-            target.createFunctionCall(
-              target.createFetch("strcmp"),
-              {
+          target.insertExpressionStatement(
+            target.createAssignment(
+              target.createAccessor(
                 target.createAccessor(
-                  target.createDereference(
-                    target.createFetch("self")
-                  ),
-                  "typeName"
+                  "result",
+                  "state"
                 ),
-                target.createStringLiteral(mangledItem),
-              }
-            ),
-            target.createIntegerLiteral(0)
-          );
-          if (i == 0) {
-            target.insertConditionalStatement(cmp);
-          } else {
-            target.enterConditionalAlternative(i - 1);
-            target.insert(cmp);
-          }
-          ++i;
-          auto tgt = target.createAccessor(
-            target.createAccessor(
-              target.createDereference(
-                target.createFetch("self")
+                "copyCount"
               ),
-              "members"
-            ),
-            "_m_" + mangledItem
+              target.createIntegerLiteral(0)
+            )
           );
-          target.insertExpressionStatement(doDtor(tgt, item));
+
+          target.insertExpressionStatement(
+            target.createAssignment(
+              target.createAccessor(
+                target.createAccessor(
+                  "result",
+                  "state"
+                ),
+                "referenceBlockCount"
+              ),
+              target.createIntegerLiteral(0)
+            )
+          );
+
+          target.insertExpressionStatement(
+            target.createAssignment(
+              target.createAccessor(
+                target.createAccessor(
+                  "result",
+                  "state"
+                ),
+                "copies"
+              ),
+              target.createFetch("NULL")
+            )
+          );
+
+          target.insertExpressionStatement(
+            target.createAssignment(
+              target.createAccessor(
+                target.createAccessor(
+                  "result",
+                  "state"
+                ),
+                "references"
+              ),
+              target.createFetch("NULL")
+            )
+          );
+
+          target.insertExpressionStatement(
+            target.createAssignment(
+              target.createAccessor(
+                "result",
+                "plain"
+              ),
+              target.createFetch("plain")
+            )
+          );
+
+          target.insertExpressionStatement(
+            target.createAssignment(
+              target.createAccessor(
+                "result",
+                "lambda"
+              ),
+              target.createFetch("NULL")
+            )
+          );
+
+          target.insertReturnDirective(target.createFetch("result"));
+          target.exitInsertionPoint();
+
+          target.insertFunctionDefinition("_Alta_copy_" + name, {
+            {"func", target.createType("_Alta_basic_function")},
+          }, target.createType("_Alta_basic_function"), true);
+          target.insertExpressionStatement(
+            target.createUnaryOperation(
+              CAST::UOperatorType::PreIncrement,
+              target.createDereference(target.createAccessor(target.createAccessor("func", "state"), "referenceCount"))
+            )
+          );
+          target.insertReturnDirective(target.createFetch("func"));
+          target.exitInsertionPoint();
+
+          target.insertFunctionDefinition("_Alta_destroy_" + name, {
+            {"func", target.createType("_Alta_basic_function", { { CAST::TypeModifierFlag::Pointer } })},
+          }, target.createType("void"), true);
+          target.insertExpressionStatement(
+            target.createFunctionCall(target.createFetch("_Alta_object_destroy"), {
+              target.createCast(
+                target.createFetch("func"),
+                target.createType("_Alta_object", { { CAST::TypeModifierFlag::Pointer } })
+              ),
+            })
+          );
+          target.exitInsertionPoint();
         }
-      }
-      if (i > 0) {
         target.exitInsertionPoint();
       }
-      target.exitInsertionPoint();
+    } else if (type->klass) {
+      auto thatMod = AltaCore::Util::getModule(type->klass->parentScope.lock().get()).lock();
+      auto mangledModName = mangleName(thatMod.get());
+      auto mangledParentName = mangleName(currentModule.get());
+      auto test = headerMangle(type->klass.get());
+      TALTA_TEST_INSERTION_PASTE;
+      if (testInsertion) {
+        saveExportDefinitions(inHeader);
+        target.insertPreprocessorDefinition(test);
+        target.insertPreprocessorInclusion("_ALTA_MODULE_" + mangledParentName + "_0_INCLUDE_" + mangledModName, Ceetah::AST::InclusionType::Computed);
+        restoreExportDefinitions(inHeader);
+      }
+    } else if (type->isUnion()) {
+      auto mangled = mangleType(type.get());
+      auto def = "_ALTA_UNION_" + name.substr(11);
+      auto test = "!defined(" + def + ")";
+      TALTA_TEST_INSERTION_PASTE;
+      if (testInsertion) {
+        target.insertPreprocessorConditional(test);
+        target.insertPreprocessorDefinition(def);
+        std::string uni = "union _u_" + name + " {\n";
+        for (auto& item: type->unionOf) {
+          hoist(item, inHeader);
+          uni += transpileType(item.get())->toString() + " _m_" + mangleType(item.get()) + ";\n";
+        }
+        uni += "}";
+        target.insertStructureDefinition("_s_" + name, {
+          {"objectType", target.createType("_Alta_object_type")},
+          {"typeName", target.createType("char", { { Ceetah::AST::TypeModifierFlag::Pointer } })},
+          {"destructor", target.createType("_Alta_union_destructor")},
+          {"members", target.createType(uni)},
+        });
+        target.insertTypeDefinition(name, target.createType("_s_" + name, mods, true));
+        target.insertFunctionDefinition("_copy_" + name, {
+          std::make_tuple("other", target.createType(name, { { Ceetah::AST::TypeModifierFlag::Pointer } }))
+        }, target.createType(name), true);
+        target.insertVariableDefinition(
+          target.createType(name),
+          "result",
+          target.createDereference(
+            target.createFetch("other")
+          )
+        );
+        size_t i = 0;
+        for (auto& item: type->unionOf) {
+          if (!item->isNative) {
+            auto mangledItem = mangleType(item.get());
+            auto cmp = target.createBinaryOperation(
+              Ceetah::AST::OperatorType::EqualTo,
+              target.createFunctionCall(
+                target.createFetch("strcmp"),
+                {
+                  target.createAccessor(
+                    target.createDereference(
+                      target.createFetch("other")
+                    ),
+                    "typeName"
+                  ),
+                  target.createStringLiteral(mangledItem),
+                }
+              ),
+              target.createIntegerLiteral(0)
+            );
+            if (i == 0) {
+              target.insertConditionalStatement(cmp);
+            } else {
+              target.enterConditionalAlternative(i - 1);
+              target.insert(cmp);
+            }
+            ++i;
+            CExpression copy = target.createAccessor(
+              target.createAccessor(
+                target.createDereference(
+                  target.createFetch("other")
+                ),
+                "members"
+              ),
+              "_m_" + mangledItem
+            );
+            if (item->indirectionLevel() == 0) {
+              copy = doCopyCtor(
+                copy,
+                item,
+                defaultCopyInfo
+              );
+            }
+            target.insertExpressionStatement(
+              target.createAssignment(
+                target.createAccessor(
+                  target.createAccessor(
+                    target.createFetch("result"),
+                    "members"
+                  ),
+                  "_m_" + mangledItem
+                ),
+                copy
+              )
+            );
+          }
+        }
+        if (i > 0) {
+          target.exitInsertionPoint();
+        }
+        target.insertReturnDirective(target.createFetch("result"));
+        target.exitInsertionPoint();
 
-      target.exitInsertionPoint();
+        target.insertFunctionDefinition("_destroy_" + name, {
+          std::make_tuple("self", target.createType(name, { { Ceetah::AST::TypeModifierFlag::Pointer } }))
+        }, target.createType("void"), true);
+        i = 0;
+        for (auto& item: type->unionOf) {
+          if (item->indirectionLevel() == 0 && canDestroy(item)) {
+            auto mangledItem = mangleType(item.get());
+            auto cmp = target.createBinaryOperation(
+              Ceetah::AST::OperatorType::EqualTo,
+              target.createFunctionCall(
+                target.createFetch("strcmp"),
+                {
+                  target.createAccessor(
+                    target.createDereference(
+                      target.createFetch("self")
+                    ),
+                    "typeName"
+                  ),
+                  target.createStringLiteral(mangledItem),
+                }
+              ),
+              target.createIntegerLiteral(0)
+            );
+            if (i == 0) {
+              target.insertConditionalStatement(cmp);
+            } else {
+              target.enterConditionalAlternative(i - 1);
+              target.insert(cmp);
+            }
+            ++i;
+            auto tgt = target.createAccessor(
+              target.createAccessor(
+                target.createDereference(
+                  target.createFetch("self")
+                ),
+                "members"
+              ),
+              "_m_" + mangledItem
+            );
+            target.insertExpressionStatement(doDtor(tgt, item));
+          }
+        }
+        if (i > 0) {
+          target.exitInsertionPoint();
+        }
+        target.exitInsertionPoint();
+
+        target.exitInsertionPoint();
+      }
     }
   } else if (item->nodeType() != DET::NodeType::Variable || includeVariables) {
     auto importModule = AltaCore::Util::getModule(item->parentScope.lock().get()).lock();
@@ -1019,22 +1063,26 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
 
     importModule->dependents.push_back(currentModule);
 
-    saveExportDefinitions(inHeader);
     auto headerName = headerMangle(item.get());
-    target.insertPreprocessorConditional("!defined(" + headerName + ')');
-    target.insertPreprocessorDefinition(headerName);
+    auto test = "!defined(" + headerName + ')';
+    TALTA_TEST_INSERTION_PASTE;
+    if (testInsertion) {
+      saveExportDefinitions(inHeader);
+      target.insertPreprocessorConditional(test);
+      target.insertPreprocessorDefinition(headerName);
 
-    if (item->nodeType() == AltaCore::DET::NodeType::Class) {
-      if (auto parentScope = item->parentScope.lock()) {
-        if (auto parentFunc = AltaCore::Util::getFunction(parentScope).lock()) {
-          target.insertPreprocessorDefinition(headerMangle(parentFunc.get()));
+      if (item->nodeType() == AltaCore::DET::NodeType::Class) {
+        if (auto parentScope = item->parentScope.lock()) {
+          if (auto parentFunc = AltaCore::Util::getFunction(parentScope).lock()) {
+            target.insertPreprocessorDefinition(headerMangle(parentFunc.get()));
+          }
         }
       }
-    }
 
-    target.insertPreprocessorInclusion("_ALTA_MODULE_" + mangledParentName + "_0_INCLUDE_" + mangledImportName, Ceetah::AST::InclusionType::Computed);
-    target.exitInsertionPoint();
-    restoreExportDefinitions(inHeader);
+      target.insertPreprocessorInclusion("_ALTA_MODULE_" + mangledParentName + "_0_INCLUDE_" + mangledImportName, Ceetah::AST::InclusionType::Computed);
+      target.exitInsertionPoint();
+      restoreExportDefinitions(inHeader);
+    }
   }
 };
 
