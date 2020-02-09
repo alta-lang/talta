@@ -95,6 +95,8 @@ namespace Talta {
 
   std::unordered_set<std::string> currentlyBeingTranspiled;
   ALTACORE_MAP<std::string, std::string> friendlyNames;
+  ALTACORE_MAP<std::string, std::vector<std::string>> rootItemsAutoIncluded;
+  ALTACORE_MAP<std::string, std::vector<std::string>> headerItemsAutoIncluded;
 };
 
 void Talta::CTranspiler::initCaptures(std::shared_ptr<DH::ClassDefinitionNode> info) {
@@ -532,32 +534,69 @@ void Talta::CTranspiler::headerPredeclaration(std::string def, std::string mangl
   insertExportDefinition(def);
 };
 
-// ugh, why did i have to do this? well, basically, it seems that we're exhausting our
-// stack space. if `hoist` calls a `testInsertion` lambda (or even a function!), a segfault
-// happens which, upon further inspection with a debugger, appears to be caused by a lack of
-// stack space (at least in the debug build of the compiler)
-//
-// for now, this is (hopefully) a successful workaround, but in the future we're going to have
-// to compile each root node in its own thread or something. i honestly dont know right now.
-// hopefully this compiler will last long enough in its current state for it to be able to compile
-// its replacement: the bootstrapped Alta compiler (i.e. `altac` coded in Alta)
+std::string Talta::CTranspiler::hoistMangle(std::shared_ptr<AltaCore::DET::ScopeItem> item) {
+  if (auto type = std::dynamic_pointer_cast<DET::Type>(item)) {
+    auto name = cTypeNameify(type.get());
+    std::string frontMangled = "";
+
+    if (currentItem.size() > 0) {
+      if (auto otherType = std::dynamic_pointer_cast<DET::Type>(currentItem.front())) {
+        if (!(*type == *otherType)) {
+          frontMangled = hoistMangle(currentItem.front());
+        }
+      } else {
+        frontMangled = hoistMangle(currentItem.front());
+      }
+    }
+
+    if (type->isOptional) {
+      return "_ALTA_OPTIONAL_" + name.substr(15) + '-' + frontMangled;
+    } else if (type->isFunction) {
+      auto def = "_ALTA_FUNC_PTR_" + name.substr(15) + '-' + frontMangled;
+      if (!type->isRawFunction) {
+        auto rawCopy = type->copy();
+        rawCopy->isRawFunction = true;
+        def = "_ALTA_FUNC_" + cTypeNameify(rawCopy.get()).substr(15);
+      }
+      return def;
+    } else if (type->klass) {
+      return headerMangle(type->klass.get());
+    } else if (type->isUnion()) {
+      return "_ALTA_UNION_" + name.substr(11) + '-' + frontMangled;
+    }
+  } else {
+    return headerMangle(item.get());
+  }
+  return "";
+};
+
+bool Talta::CTranspiler::isAutoIncluded(std::string item, std::string parent, bool inHeader) {
+  auto& items = inHeader ? headerItemsAutoIncluded[parent] : rootItemsAutoIncluded[parent];
+  for (auto& included: items) {
+    if (item == included) {
+      return true;
+    }
+    if (included != parent && isAutoIncluded(item, included, true)) {
+      return true;
+    }
+  }
+  return false;
+};
+
+void Talta::CTranspiler::insertHoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, bool inHeader) {
+  if (currentItem.size() > 0) {
+    auto parent = hoistMangle(currentItem.back());
+    auto def = hoistMangle(item);
+    auto& items = inHeader ? headerItemsAutoIncluded[parent] : rootItemsAutoIncluded[parent];
+    if (!parent.empty() && !def.empty()) {
+      items.push_back(def);
+    }
+  }
+};
+
 #define TALTA_TEST_INSERTION_PASTE bool testInsertion = true;\
-  auto testInsertionPos = target.insertionPoint->index;\
-  target.insertionPoint->moveBackward();\
-  if (testInsertionPos > 0) {\
-    while (target.insertionPoint->container()[target.insertionPoint->index]->nodeType() == CAST::NodeType::ConditionalPreprocessorDirective) {\
-      if (std::dynamic_pointer_cast<CAST::ConditionalPreprocessorDirective>(target.insertionPoint->container()[target.insertionPoint->index])->test == test) {\
-        target.insertionPoint->index = testInsertionPos;\
-        testInsertion = false;\
-        break;\
-      }\
-      if (target.insertionPoint->index == 0) {\
-        break;\
-      } else {\
-        target.insertionPoint->moveBackward();\
-      }\
-    }\
-    target.insertionPoint->index = testInsertionPos;\
+  if (currentItem.size() > 0 && !hoistMangle(currentItem.back()).empty()) {\
+    testInsertion = !isAutoIncluded(hoistMangle(item), hoistMangle(currentItem.back()), inHeader);\
   }
 
 void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, bool inHeader, bool includeVariables) {
@@ -568,13 +607,14 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
     auto mods = convertTypeModifiers(type->modifiers);
 
     if (type->isOptional) {
-      auto other = type->optionalTarget;
-      hoist(other, inHeader);
-
       auto def = "_ALTA_OPTIONAL_" + name.substr(15);
       auto test = "!defined(" + def + ")";
       TALTA_TEST_INSERTION_PASTE;
       if (testInsertion) {
+        insertHoist(item, inHeader);
+        currentItem.push_back(item);
+        auto other = type->optionalTarget;
+        hoist(other, inHeader);
         target.insertPreprocessorConditional(test);
         target.insertPreprocessorDefinition(def);
         std::vector<std::pair<std::string, std::shared_ptr<CAST::Type>>> members = {
@@ -697,6 +737,7 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
         target.exitInsertionPoint();
 
         target.exitInsertionPoint();
+        currentItem.pop_back();
       }
     } if (type->isFunction) {
       auto def = "_ALTA_FUNC_PTR_" + name.substr(15);
@@ -710,6 +751,8 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
       auto test = "!defined(" + def + ")";
       TALTA_TEST_INSERTION_PASTE;
       if (testInsertion) {
+        insertHoist(item, inHeader);
+        currentItem.push_back(item);
         target.insertPreprocessorConditional(test);
         target.insertPreprocessorDefinition(def);
         std::vector<std::shared_ptr<Ceetah::AST::Type>> cParams;
@@ -899,18 +942,22 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
           target.exitInsertionPoint();
         }
         target.exitInsertionPoint();
+        currentItem.pop_back();
       }
     } else if (type->klass) {
       auto thatMod = AltaCore::Util::getModule(type->klass->parentScope.lock().get()).lock();
       auto mangledModName = mangleName(thatMod.get());
       auto mangledParentName = mangleName(currentModule.get());
-      auto test = headerMangle(type->klass.get());
+      auto def = headerMangle(type->klass.get());
       TALTA_TEST_INSERTION_PASTE;
       if (testInsertion) {
+        insertHoist(item, inHeader);
+        currentItem.push_back(item);
         saveExportDefinitions(inHeader);
-        target.insertPreprocessorDefinition(test);
+        target.insertPreprocessorDefinition(def);
         target.insertPreprocessorInclusion("_ALTA_MODULE_" + mangledParentName + "_0_INCLUDE_" + mangledModName, Ceetah::AST::InclusionType::Computed);
         restoreExportDefinitions(inHeader);
+        currentItem.pop_back();
       }
     } else if (type->isUnion()) {
       auto mangled = mangleType(type.get());
@@ -918,6 +965,8 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
       auto test = "!defined(" + def + ")";
       TALTA_TEST_INSERTION_PASTE;
       if (testInsertion) {
+        insertHoist(item, inHeader);
+        currentItem.push_back(item);
         target.insertPreprocessorConditional(test);
         target.insertPreprocessorDefinition(def);
         std::string uni = "union _u_" + name + " {\n";
@@ -1054,6 +1103,7 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
         target.exitInsertionPoint();
 
         target.exitInsertionPoint();
+        currentItem.pop_back();
       }
     }
   } else if (item->nodeType() != DET::NodeType::Variable || includeVariables) {
@@ -1063,13 +1113,15 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
 
     importModule->dependents.push_back(currentModule);
 
-    auto headerName = headerMangle(item.get());
-    auto test = "!defined(" + headerName + ')';
+    auto def = headerMangle(item.get());
+    auto test = "!defined(" + def + ')';
     TALTA_TEST_INSERTION_PASTE;
     if (testInsertion) {
+      insertHoist(item, inHeader);
+      currentItem.push_back(item);
       saveExportDefinitions(inHeader);
       target.insertPreprocessorConditional(test);
-      target.insertPreprocessorDefinition(headerName);
+      target.insertPreprocessorDefinition(def);
 
       if (item->nodeType() == AltaCore::DET::NodeType::Class) {
         if (auto parentScope = item->parentScope.lock()) {
@@ -1082,6 +1134,7 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
       target.insertPreprocessorInclusion("_ALTA_MODULE_" + mangledParentName + "_0_INCLUDE_" + mangledImportName, Ceetah::AST::InclusionType::Computed);
       target.exitInsertionPoint();
       restoreExportDefinitions(inHeader);
+      currentItem.pop_back();
     }
   }
 };
@@ -2306,6 +2359,7 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
         cRoots.push_back(std::make_tuple(isGeneric, info->function, root));
         sourceBuilderCache = source;
         source = Ceetah::Builder(root);
+        currentItem.push_back(info->function);
       //}
 
       if (!targetIsHeader) {
@@ -2322,6 +2376,7 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
           if (arg->klass) {
             auto dependency = AltaCore::Util::getModule(arg->klass->parentScope.lock().get()).lock();
             auto mangledImportName = mangleName(dependency.get());
+            insertHoist(arg->klass, false);
             source.insertPreprocessorDefinition(headerMangle(arg->klass.get()));
             source.insertPreprocessorInclusion("_ALTA_MODULE_" + mangledModName + "_0_INCLUDE_" + mangledImportName, CAST::InclusionType::Computed);
           } else {
@@ -2842,6 +2897,7 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
 
       //if (isGeneric) {
         source = sourceBuilderCache;
+        currentItem.pop_back();
       //}
 
       co.save(isGeneric, genericIdx + 1, (size_t)0);
@@ -3905,9 +3961,13 @@ auto Talta::CTranspiler::transpileFunctionDeclarationNode(Coroutine& co) -> Coro
     headerPredeclaration(headerMangle(info->function.get()), alwaysImport ? "" : mangleName(currentModule.get()));
   }
 
+  currentItem.push_back(info->function);
+
   for (auto& hoistedType: info->function->publicHoistedItems) {
     hoist(hoistedType, targetIsHeader);
   }
+
+  currentItem.pop_back();
 
   if (targetIsHeader) {
     header.exitInsertionPoint();
@@ -4240,6 +4300,7 @@ auto Talta::CTranspiler::transpileClassDefinitionNode(Coroutine& co) -> Coroutin
 
       auto mod = AltaCore::Util::getModule(info->klass->parentScope.lock().get()).lock();
       auto mangledModName = mangleName(mod.get());
+      currentItem.push_back(info->klass);
 
       if (info->klass->isCaptureClass()) {
         auto tmp = popToGlobal();
@@ -5038,6 +5099,7 @@ auto Talta::CTranspiler::transpileClassDefinitionNode(Coroutine& co) -> Coroutin
 
       source.exitInsertionPoint();
       source.exitInsertionPoint();
+      currentItem.pop_back();
 
       if (info->klass->copyConstructor) {
         hoist(info->klass->copyConstructor, true);
@@ -6798,6 +6860,8 @@ auto Talta::CTranspiler::transpileStructureDefinitionStatement(Coroutine& co) ->
   auto alwaysImport = alwaysImportTable.find(structure->id) != alwaysImportTable.end();
   headerPredeclaration("_ALTA_CLASS_" + mangledClassName, alwaysImport ? "" : mangledModName, true);
 
+  currentItem.push_back(info->structure);
+
   for (auto& hoistedType: info->structure->publicHoistedItems) {
     hoist(hoistedType, /*info->isExport*/ true);
   }
@@ -6821,6 +6885,8 @@ auto Talta::CTranspiler::transpileStructureDefinitionStatement(Coroutine& co) ->
   if (info->isTyped) {
     target.insertTypeDefinition(name, target.createType("_struct_" + name, {}, true));
   }
+
+  currentItem.pop_back();
 
   target.exitInsertionPoint();
 
@@ -7565,6 +7631,7 @@ auto Talta::CTranspiler::transpileLambdaExpression(Coroutine& co) -> Coroutine& 
     if (loopIteration == 0) {
       auto mod = AltaCore::Util::getModule(info->inputScope.get()).lock();
       auto mangledModName = mangleName(mod.get());
+      currentItem.push_back(info->function);
 
       for (auto& hoistedType: info->function->publicHoistedItems) {
         hoist(hoistedType, false, false);
@@ -8047,6 +8114,7 @@ auto Talta::CTranspiler::transpileLambdaExpression(Coroutine& co) -> Coroutine& 
         source.createArrayLiteral(copyItems, voidArrayType),
         source.createArrayLiteral(referenceItems, voidArrayType),
       });
+      currentItem.pop_back();
       return co.finalYield(result);
     }
   }
@@ -8087,6 +8155,8 @@ auto Talta::CTranspiler::transpileClassOperatorDefinitionStatement(Coroutine& co
     auto returnType = transpileType(info->method->returnType.get());
 
     bool targetIsHeader = true;
+
+    currentItem.push_back(info->method);
 
     if (!targetIsHeader) {
       for (auto& hoistedType: info->method->publicHoistedItems) {
@@ -8179,6 +8249,8 @@ auto Talta::CTranspiler::transpileClassOperatorDefinitionStatement(Coroutine& co
         })
       );
     }
+
+    currentItem.pop_back();
 
     source.exitInsertionPoint();
     return co.finalYield();

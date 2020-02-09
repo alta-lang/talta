@@ -455,6 +455,12 @@ namespace Talta {
       std::string newTempName() {
         return mangleName(currentScope.get()) + "_temp_var_" + std::to_string(tempVarIDs[currentScope->id]++);
       };
+
+      std::vector<std::shared_ptr<AltaCore::DET::ScopeItem>> currentItem;
+
+      void insertHoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, bool inHeader);
+      bool isAutoIncluded(std::string item, std::string parent, bool inHeader);
+      std::string hoistMangle(std::shared_ptr<AltaCore::DET::ScopeItem> item);
     public:
       std::shared_ptr<Ceetah::AST::RootNode> hRoot = nullptr;
       std::shared_ptr<Ceetah::AST::RootNode> dRoot = nullptr;
