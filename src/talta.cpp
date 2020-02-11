@@ -1114,7 +1114,7 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
     importModule->dependents.push_back(currentModule);
 
     auto def = headerMangle(item.get());
-    auto test = "!defined(" + def + ')';
+    auto test = "!defined(_DEFINED_" + def + ')';
     TALTA_TEST_INSERTION_PASTE;
     if (testInsertion) {
       insertHoist(item, inHeader);
