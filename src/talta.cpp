@@ -21,6 +21,7 @@ namespace Talta {
   ALTACORE_MAP<std::string, bool> inHeaderTable;
   ALTACORE_MAP<std::string, bool> alwaysImportTable;
   ALTACORE_MAP<std::string, bool> packedTable;
+  ALTACORE_MAP<std::string, std::shared_ptr<AltaCore::DET::Type>> invalidValueExpressionTable;
 
   std::shared_ptr<AltaCore::DET::ScopeItem> followAlias(std::shared_ptr<AltaCore::DET::ScopeItem> maybeAlias) {
     while (auto alias = std::dynamic_pointer_cast<AltaCore::DET::Alias>(maybeAlias)) {
@@ -8125,15 +8126,68 @@ auto Talta::CTranspiler::transpileSpecialFetchExpression(Coroutine& co) -> Corou
   auto fetch = std::dynamic_pointer_cast<AAST::SpecialFetchExpression>(node);
   auto info = std::dynamic_pointer_cast<DH::SpecialFetchExpression>(_info);
 
-  CExpression expr = source.createFetch(mangleName(info->items[0].get()));
+  if (invalidValueExpressionTable.find(info->id) != invalidValueExpressionTable.end()) {
+    auto& type = invalidValueExpressionTable[info->id];
+    CExpression expr = nullptr;
+    if (type->indirectionLevel() > 0) {
+      expr = source.createFetch("NULL");
+      for (size_t i = 0; i < type->referenceLevel(); ++i) {
+        expr = source.createDereference(expr);
+      }
+    } else if (type->isNative) {
+      expr = source.createIntegerLiteral(0);
+    } else if (type->isFunction && type->isRawFunction) {
+      expr = source.createFetch("NULL");
+    } else if (type->isFunction) {
+      expr = source.createArrayLiteral({
+        source.createFetch("_Alta_object_type_function"),
+        source.createArrayLiteral({
+          source.createFetch("NULL"),
+        }, source.createType("_Alta_lambda_state")),
+      }, transpileType(type.get()));
+    } else if (type->isOptional) {
+      expr = source.createArrayLiteral({
+        source.createFetch("_Alta_object_type_optional"),
+        source.createFetch("_Alta_bool_false"),
+        source.createFetch("_Alta_no_op_optional_destructor"),
+      }, transpileType(type.get()));
+    } else if (type->unionOf.size() > 0) {
+      expr = source.createArrayLiteral({
+        source.createFetch("_Alta_object_type_union"),
+        source.createStringLiteral(""),
+        source.createFetch("_Alta_no_op_union_destructor"),
+      }, transpileType(type.get()));
+    } else if (type->klass) {
+      expr = source.createArrayLiteral({
+        source.createFetch("_Alta_object_type_class"),
+        source.createArrayLiteral({
+          source.createStringLiteral(""),
+          source.createFetch("_Alta_bool_true"),
+          source.createFetch("_Alta_no_op_class_destructor"),
+          source.createFetch("_Alta_bool_true"),
+          source.createStringLiteral(""),
+          source.createFetch("PTRDIFF_MAX"),
+          source.createFetch("PTRDIFF_MAX"),
+          source.createIntegerLiteral(0),
+          source.createIntegerLiteral(0),
+          source.createFetch("_Alta_bool_false"),
+        }, source.createType("_Alta_class_info")),
+      }, transpileType(type.get()));
+    } else {
+      throw std::runtime_error("can't create invalid value for type");
+    }
+    return co.finalYield(expr);
+  } else {
+    CExpression expr = source.createFetch(mangleName(info->items[0].get()));
 
-  auto type = DET::Type::getUnderlyingType(info->items[0]);
+    auto type = DET::Type::getUnderlyingType(info->items[0]);
 
-  for (size_t i = 0; i < type->referenceLevel(); ++i) {
-    expr = source.createDereference(expr);
+    for (size_t i = 0; i < type->referenceLevel(); ++i) {
+      expr = source.createDereference(expr);
+    }
+
+    return co.finalYield(expr);
   }
-
-  return co.finalYield(expr);
 };
 auto Talta::CTranspiler::transpileClassOperatorDefinitionStatement(Coroutine& co) -> Coroutine& {
   auto [node, _info] = co.arguments();
@@ -9107,5 +9161,19 @@ void Talta::registerAttributes(AltaCore::Filesystem::Path modulePath) {
   AC_END_ATTRIBUTE;
   AC_ATTRIBUTE(StructureDefinitionStatement, "CTranspiler", "packed");
     packedTable[target->id] = true;
+  AC_END_ATTRIBUTE;
+  AC_ATTRIBUTE(SpecialFetchExpression, "invalid");
+    if (args.size() != 1) {
+      throw std::runtime_error("expected a single type argument to special fetch expression @invalid attribute");
+    }
+    if (!args.front().isScopeItem) {
+      throw std::runtime_error("expected a type argument for special fetch expression @invalid attribute");
+    }
+    auto type = std::dynamic_pointer_cast<DET::Type>(args.front().item);
+    if (!type) {
+      throw std::runtime_error("expected a type argument for special fetch expression @invalid attribute");
+    }
+    invalidValueExpressionTable[info->id] = type;
+    info->items.push_back(type);
   AC_END_ATTRIBUTE;
 };
