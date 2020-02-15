@@ -613,7 +613,6 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
       TALTA_TEST_INSERTION_PASTE;
       if (testInsertion) {
         insertHoist(item, inHeader);
-        currentItem.push_back(item);
         auto other = type->optionalTarget;
         hoist(other, inHeader);
         target.insertPreprocessorConditional(test);
@@ -738,7 +737,6 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
         target.exitInsertionPoint();
 
         target.exitInsertionPoint();
-        currentItem.pop_back();
       }
     } if (type->isFunction) {
       auto def = "_ALTA_FUNC_PTR_" + name.substr(15);
@@ -753,7 +751,6 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
       TALTA_TEST_INSERTION_PASTE;
       if (testInsertion) {
         insertHoist(item, inHeader);
-        currentItem.push_back(item);
         target.insertPreprocessorConditional(test);
         target.insertPreprocessorDefinition(def);
         std::vector<std::shared_ptr<Ceetah::AST::Type>> cParams;
@@ -943,7 +940,6 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
           target.exitInsertionPoint();
         }
         target.exitInsertionPoint();
-        currentItem.pop_back();
       }
     } else if (type->klass) {
       auto thatMod = AltaCore::Util::getModule(type->klass->parentScope.lock().get()).lock();
@@ -953,12 +949,10 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
       TALTA_TEST_INSERTION_PASTE;
       if (testInsertion) {
         insertHoist(item, inHeader);
-        currentItem.push_back(item);
         saveExportDefinitions(inHeader);
         target.insertPreprocessorDefinition(def);
         target.insertPreprocessorInclusion("_ALTA_MODULE_" + mangledParentName + "_0_INCLUDE_" + mangledModName, Ceetah::AST::InclusionType::Computed);
         restoreExportDefinitions(inHeader);
-        currentItem.pop_back();
       }
     } else if (type->isUnion()) {
       auto mangled = mangleType(type.get());
@@ -967,7 +961,6 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
       TALTA_TEST_INSERTION_PASTE;
       if (testInsertion) {
         insertHoist(item, inHeader);
-        currentItem.push_back(item);
         target.insertPreprocessorConditional(test);
         target.insertPreprocessorDefinition(def);
         std::string uni = "union _u_" + name + " {\n";
@@ -1104,7 +1097,6 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
         target.exitInsertionPoint();
 
         target.exitInsertionPoint();
-        currentItem.pop_back();
       }
     }
   } else if (item->nodeType() != DET::NodeType::Variable || includeVariables) {
@@ -1119,7 +1111,6 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
     TALTA_TEST_INSERTION_PASTE;
     if (testInsertion) {
       insertHoist(item, inHeader);
-      currentItem.push_back(item);
       saveExportDefinitions(inHeader);
       target.insertPreprocessorConditional(test);
       target.insertPreprocessorDefinition(def);
@@ -1135,7 +1126,6 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
       target.insertPreprocessorInclusion("_ALTA_MODULE_" + mangledParentName + "_0_INCLUDE_" + mangledImportName, Ceetah::AST::InclusionType::Computed);
       target.exitInsertionPoint();
       restoreExportDefinitions(inHeader);
-      currentItem.pop_back();
     }
   }
 };
@@ -2951,7 +2941,7 @@ auto Talta::CTranspiler::transpileReturnDirectiveNode(Coroutine& co) -> Coroutin
     if (retDir->expression != nullptr) {
       auto functionReturnType = info->parentFunction ? (info->parentFunction->isGenerator ? info->parentFunction->generatorReturnType : info->parentFunction->returnType) : nullptr;
 
-      if (functionReturnType && functionReturnType->isNative && functionReturnType->nativeTypeName == AltaCore::DET::NativeType::Void && functionReturnType->modifiers.size() == 0) {
+      if (functionReturnType && *functionReturnType == DET::Type(DET::NativeType::Void)) {
         isVoid = true;
       } else {
         // if we're returing a reference, there's no need to copy anything
@@ -4759,6 +4749,13 @@ auto Talta::CTranspiler::transpileClassDefinitionNode(Coroutine& co) -> Coroutin
         source.insertReturnDirective(source.createFetch("NULL"));
 
         source.exitInsertionPoint();
+      }
+
+      for (auto& hoistedType: info->initializerMethod->publicHoistedItems) {
+        hoist(hoistedType, false);
+      }
+      for (auto& hoistedType: info->initializerMethod->privateHoistedItems) {
+        hoist(hoistedType, false);
       }
 
       header.insertFunctionDeclaration("_init_" + mangledClassName, {
@@ -8071,6 +8068,9 @@ auto Talta::CTranspiler::transpileLambdaExpression(Coroutine& co) -> Coroutine& 
       );
 
       source.insertReturnDirective(source.createFetch("result"));
+      source.exitInsertionPoint();
+
+      source.insertionPoint->moveForward();
 
       source.insertionPoint = savedIP;
 
@@ -8134,8 +8134,6 @@ auto Talta::CTranspiler::transpileSpecialFetchExpression(Coroutine& co) -> Corou
       for (size_t i = 0; i < type->referenceLevel(); ++i) {
         expr = source.createDereference(expr);
       }
-    } else if (type->isNative) {
-      expr = source.createIntegerLiteral(0);
     } else if (type->isFunction && type->isRawFunction) {
       expr = source.createFetch("NULL");
     } else if (type->isFunction) {
@@ -8163,6 +8161,7 @@ auto Talta::CTranspiler::transpileSpecialFetchExpression(Coroutine& co) -> Corou
         source.createArrayLiteral({
           source.createStringLiteral(""),
           source.createFetch("_Alta_bool_true"),
+          source.createFetch("_Alta_bool_false"),
           source.createFetch("_Alta_no_op_class_destructor"),
           source.createFetch("_Alta_bool_true"),
           source.createStringLiteral(""),
@@ -8173,6 +8172,8 @@ auto Talta::CTranspiler::transpileSpecialFetchExpression(Coroutine& co) -> Corou
           source.createFetch("_Alta_bool_false"),
         }, source.createType("_Alta_class_info")),
       }, transpileType(type.get()));
+    } else if (type->isNative) {
+      expr = source.createIntegerLiteral(0);
     } else {
       throw std::runtime_error("can't create invalid value for type");
     }
