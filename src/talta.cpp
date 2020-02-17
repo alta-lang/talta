@@ -5988,6 +5988,9 @@ auto Talta::CTranspiler::transpileWhileLoopStatement(Coroutine& co) -> Coroutine
   auto [node, _info] = co.arguments();
   auto loop = std::dynamic_pointer_cast<AAST::WhileLoopStatement>(node);
   auto info = std::dynamic_pointer_cast<DH::WhileLoopStatement>(_info);
+  if (co.iteration() == 0) {
+    source.insertPreprocessorDefinition("_ALTA_" + mangleName(info->scope.get()) + "_NEXT_ITERATION", "");
+  }
   if (inGenerator) {
     if (co.iteration() == 0) {
       generatorLoopScopes.push(std::make_pair(generatorScopeCount, generatorScopeCount + 2));
