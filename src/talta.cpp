@@ -7580,7 +7580,7 @@ auto Talta::CTranspiler::transpileBitfieldDefinitionNode(Coroutine& co) -> Corou
                 CAST::UOperatorType::BitwiseNot,
                 target.createBinaryOperation(
                   CAST::OperatorType::LeftShift,
-                  target.createIntegerLiteral("1UL"),
+                  target.createIntegerLiteral("1ULL"),
                   target.createIntegerLiteral(n)
                 )
               )
@@ -7592,7 +7592,7 @@ auto Talta::CTranspiler::transpileBitfieldDefinitionNode(Coroutine& co) -> Corou
                 target.createFetch("source"),
                 target.createBinaryOperation(
                   CAST::OperatorType::LeftShift,
-                  target.createIntegerLiteral("1UL"),
+                  target.createIntegerLiteral("1ULL"),
                   target.createIntegerLiteral(n - start)
                 )
               ),
