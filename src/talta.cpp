@@ -110,6 +110,7 @@ namespace Talta {
   ALTACORE_MAP<std::string, std::string> friendlyNames;
   ALTACORE_MAP<std::string, std::vector<std::string>> rootItemsAutoIncluded;
   ALTACORE_MAP<std::string, std::vector<std::string>> headerItemsAutoIncluded;
+  ALTACORE_MAP<std::string, std::string> overridenNames;
 };
 
 void Talta::CTranspiler::initCaptures(std::shared_ptr<DH::ClassDefinitionNode> info) {
@@ -445,12 +446,12 @@ std::string Talta::mangleName(AltaCore::DET::ScopeItem* item, bool fullName) {
   } else if (nodeType == NodeType::Variable) {
     auto var = dynamic_cast<DET::Variable*>(item);
     isLiteral = isLiteral || var->isLiteral;
-    itemName = isLiteral ? var->name : escapeName(var->name);
     if (auto ps = var->parentScope.lock()) {
       if (auto pc = ps->parentClass.lock()) {
         isLiteral = pc->isLiteral;
       }
     }
+    itemName = isLiteral ? var->name : escapeName(var->name);
     if (var->isVariable) {
       var->isVariable = false;
       auto tmp = "_Alta_array_" + mangleName(var);
@@ -468,6 +469,11 @@ std::string Talta::mangleName(AltaCore::DET::ScopeItem* item, bool fullName) {
     for (auto arg: klass->genericArguments) {
       itemName += "_2_" + mangleType(arg.get());
     }
+  }
+
+  if (overridenNames.find(item->id) != overridenNames.end()) {
+    isLiteral = true;
+    itemName = overridenNames[item->id];
   }
 
   if (!isLiteral && fullName) {
@@ -1807,6 +1813,17 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::cast(std::shared_pt
       )
     ) {
       expr = doCopyCtor(expr, exprType, additionalCopyInfo);
+    }
+    return expr;
+  }
+  // native type (e.g. integer) -> bool
+  //
+  // done instead of simple coercion because simple coercion might truncate/overflow the value
+  // and end up with zero (which is falsy) instead of the proper truthy value
+  if (*dest == DET::Type(DET::NativeType::Bool) && exprType->isNative && exprType->referenceLevel() == 0) {
+    if (!(*exprType == DET::Type(DET::NativeType::Bool))) {
+      expr = source.createUnaryOperation(CAST::UOperatorType::Not, expr);
+      expr = source.createUnaryOperation(CAST::UOperatorType::Not, expr);
     }
     return expr;
   }
@@ -3227,7 +3244,7 @@ auto Talta::CTranspiler::transpileVariableDefinitionExpression(Coroutine& co) ->
       init = cast(transpiled, exprType, info->variable->type, true, additionalCopyInfo(varDef->initializationExpression, info->initializationExpression), false, &varDef->initializationExpression->position);
     } else if (info->type->type->pointerLevel() > 0) {
       init = source.createFetch("NULL");
-    } else if (info->type->type->isNative) {
+    } else if (info->type->type->isNative || (info->type->type->klass && info->type->type->klass->isStructure)) {
       init = source.createArrayLiteral({ source.createIntegerLiteral(0) });
     } else if (info->type->type->isOptional) {
       init = source.createFunctionCall(source.createFetch("_Alta_make_empty_" + cTypeNameify(info->type->type.get())), {});
@@ -3284,6 +3301,9 @@ auto Talta::CTranspiler::transpileVariableDefinitionExpression(Coroutine& co) ->
         ));
       }
       CExpression expr = source.createFetch(mangledVarName);
+      if (inGenerator) {
+        expr = source.createDereference(expr);
+      }
       return co.finalYield(expr);
     }
     return co.finalYield();
@@ -9341,4 +9361,27 @@ void Talta::registerAttributes(AltaCore::Filesystem::Path modulePath) {
     invalidValueExpressionTable[info->id] = type;
     info->items.push_back(type);
   AC_END_ATTRIBUTE;
+  AltaCore::Attributes::registerAttribute({ "CTranspiler", "name" }, {
+    AltaCore::AST::NodeType::StructureDefinitionStatement,
+  }, AC_ATTRIBUTE_FUNC {
+    std::string itemId;
+
+    switch (_target->nodeType()) {
+      case AltaCore::AST::NodeType::StructureDefinitionStatement: {
+        AC_ATTRIBUTE_CAST(StructureDefinitionStatement);
+        itemId = info->structure->id;
+      } break;
+      default: {
+        throw std::runtime_error("this isn't suppossed to happen");
+      } break;
+    }
+
+    if (itemId.empty())
+      throw std::runtime_error("this isn't suppossed to happen");
+
+    if (args.size() != 1 || !args.front().isString)
+      throw std::runtime_error("expected a single string argument to transpiler name override (@CTranspiler.name)");
+
+    overridenNames[itemId] = args.front().string;
+  }, modulePath.toString());
 };
