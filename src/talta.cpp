@@ -6763,6 +6763,7 @@ auto Talta::CTranspiler::transpileRangedForLoopStatement(Coroutine& co) -> Corou
   } else {
     if (co.iteration() == 0) {
       source.insertBlock();
+      stackBookkeepingStart(info->wrapperScope);
       return co.await(boundTranspile, loop->start, info->start);
     } else if (co.iteration() == 1) {
       auto mangledCounter = mangleName(info->counter.get());
@@ -6910,6 +6911,7 @@ auto Talta::CTranspiler::transpileRangedForLoopStatement(Coroutine& co) -> Corou
       source.insertExpressionStatement(source.createFetch("_ALTA_" + mangleName(info->scope.get()) + "_NEXT_ITERATION"));
       source.exitInsertionPoint();
       source.exitInsertionPoint();
+      stackBookkeepingStop(info->wrapperScope);
       source.exitInsertionPoint();
       return co.finalYield();
     }
