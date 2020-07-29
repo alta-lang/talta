@@ -2977,6 +2977,100 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
         header.exitInsertionPoint();
       }
 
+      for (auto& [variant, optionalValueProvided]: info->optionalVariantFunctions) {
+        std::vector<std::tuple<std::string, std::shared_ptr<CAST::Type>>> cVariantParams;
+        auto mangledVariantName = mangleName(variant.get());
+
+        if (info->function->isMethod) {
+          cVariantParams.push_back(std::make_tuple("_Alta_self", transpileType(info->function->parentClassType.get())));
+        }
+
+        size_t optIdx = 0;
+        size_t variantIdx = 0;
+        for (size_t i = 0; i < info->parameters.size(); ++i) {
+          if (info->parameters[i]->defaultValue && !optionalValueProvided[optIdx++])
+            continue;
+          auto& var = variant->parameterVariables[variantIdx];
+          auto& param = func->parameters[i];
+          auto& paramInfo = info->parameters[i];
+          auto type = (param->isVariable) ? paramInfo->type->type->point() : paramInfo->type->type;
+          auto mangled = mangleName(var.get());
+          if (param->isVariable) {
+            mangled = mangled.substr(12);
+          }
+          cVariantParams.push_back({ (param->isVariable ? "_Alta_array_" : "") + mangled, transpileType(type.get()) });
+          if (param->isVariable) {
+            cVariantParams.push_back({ "_Alta_array_length_" + mangled, size_tType });
+          }
+          ++variantIdx;
+        }
+
+        if (variant->isGenerator || variant->isAsync) {
+          // TODO
+        } else {
+          source.insertFunctionDefinition(mangledVariantName, cVariantParams, returnType);
+          std::vector<CExpression> args;
+
+          if (info->function->isMethod) {
+            args.push_back(source.createFetch("_Alta_self"));
+          }
+
+          optIdx = 0;
+          variantIdx = 0;
+          for (size_t i = 0; i < info->parameters.size(); ++i) {
+            if (info->parameters[i]->defaultValue && !optionalValueProvided[optIdx++]) {
+              // DONT DO THIS!!! THIS IS A TERRIBLE HACK!!!
+              // please please please always use co.await!
+              // i only did this right now because i really want to see this feature work right now
+              // and i dont feel like reworking all this code to fit neatly into another coroutine iteration,
+              // but this can cause all sorts of trouble (mainly: stack explosions!!!),
+              // so please, i beg you, USE THE DAMN COROUTINES
+              auto transpiled = transpile(func->parameters[i]->defaultValue, info->parameters[i]->defaultValue);
+              args.push_back(cast(
+                transpiled,
+                DET::Type::getUnderlyingType(info->parameters[i]->defaultValue.get()),
+                info->parameters[i]->type->type,
+                false,
+                additionalCopyInfo(func->parameters[i]->defaultValue, info->parameters[i]->defaultValue),
+                false,
+                &func->parameters[i]->defaultValue->position
+              ));
+            } else {
+              args.push_back(source.createFetch(mangleName(variant->parameterVariables[variantIdx++].get())));
+            }
+          }
+          source.insertReturnDirective(
+            source.createFunctionCall(
+              source.createFetch(mangledFuncName),
+              args
+            )
+          );
+          source.exitInsertionPoint();
+        }
+
+        auto mod = AltaCore::Util::getModule(variant->parentScope.lock().get()).lock();
+        auto mangledModName = mangleName(mod.get());
+        auto alwaysImport = alwaysImportTable.find(func->id) != alwaysImportTable.end();
+        headerPredeclaration("_ALTA_FUNCTION_" + mangledVariantName, alwaysImport ? "" : mangledModName, !isGeneric);
+        if (variant->isMethod) {
+          hoist(variant->parentClassType->klass, true);
+        }
+        for (auto arg: variant->genericArguments) {
+          hoist(arg, true);
+        }
+        for (auto& hoistedType: variant->publicHoistedItems) {
+          hoist(hoistedType, true);
+        }
+        hoist(variant->returnType, true);
+        if (variant->isGenerator || variant->isAsync) {
+          auto& genClass = variant->isGenerator ? info->generator : info->coroutine;
+          header.insertFunctionDeclaration(mangledVariantName, cVariantParams, source.createType(mangleName(genClass.get())));
+        } else {
+          header.insertFunctionDeclaration(mangledVariantName, cVariantParams, returnType);
+        }
+        header.exitInsertionPoint();
+      }
+
       //if (isGeneric) {
         source = sourceBuilderCache;
         currentItem.pop_back();
