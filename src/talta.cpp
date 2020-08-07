@@ -33,6 +33,7 @@ namespace Talta {
   ALTACORE_MAP<std::string, bool> alwaysImportTable;
   ALTACORE_MAP<std::string, bool> packedTable;
   ALTACORE_MAP<std::string, std::shared_ptr<AltaCore::DET::Type>> invalidValueExpressionTable;
+  ALTACORE_MAP<std::string, bool> macroTable;
 
   std::shared_ptr<AltaCore::DET::ScopeItem> followAlias(std::shared_ptr<AltaCore::DET::ScopeItem> maybeAlias) {
     while (auto alias = std::dynamic_pointer_cast<AltaCore::DET::Alias>(maybeAlias)) {
@@ -1850,7 +1851,7 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::cast(std::shared_pt
   };
   auto canCopy = [&](std::shared_ptr<DET::Type> type = nullptr) {
     if (!type) type = currentType;
-    return !type->isNative && type->indirectionLevel() < 1;
+    return (!type->isNative || !type->isRawFunction) && type->indirectionLevel() < 1;
   };
   for (size_t i = 0; i < path.size(); i++) {
     using CCT = AltaCore::DET::CastComponentType;
@@ -4087,7 +4088,21 @@ auto Talta::CTranspiler::transpileFunctionCallExpression(Coroutine& co) -> Corou
       auto funcName = "_Alta_function_" + cTypeNameify(rawCopy.get()).substr(15);
       result = source.createFunctionCall(source.createFetch("_Alta_call_" + funcName), args);
     } else {
-      result = source.createFunctionCall(co.result<CExpression>(), args);
+      bool macro = false;
+      if (auto fetch = std::dynamic_pointer_cast<AAST::Fetch>(call->target)) {
+        auto fetchInfo = std::dynamic_pointer_cast<DH::Fetch>(info->target);
+        if (macroTable.find(fetchInfo->narrowedTo->id) != macroTable.end()) {
+          macro = true;
+        }
+      } else if (auto acc = std::dynamic_pointer_cast<AAST::Accessor>(call->target)) {
+        auto accInfo = std::dynamic_pointer_cast<DH::Accessor>(info->target);
+        if (macroTable.find(accInfo->narrowedTo->id) != macroTable.end()) {
+          macro = true;
+        }
+      }
+      auto cCall = source.createFunctionCall(co.result<CExpression>(), args);
+      cCall->macro = macro;
+      result = cCall;
     }
     if (call->maybe) {
       auto optionalType = info->targetType->returnType->makeOptional();
@@ -5919,12 +5934,14 @@ auto Talta::CTranspiler::transpileClassSpecialMethodDefinitionStatement(Coroutin
       }
 
       for (auto& var: info->klass->members) {
-        doDtor(
-          source.createAccessor(
-            source.createDereference(source.createFetch("_Alta_self")),
-            mangleName(var.get())
-          ),
-          var->type
+        source.insertExpressionStatement(
+          doDtor(
+            source.createAccessor(
+              source.createDereference(source.createFetch("_Alta_self")),
+              mangleName(var.get())
+            ),
+            var->type
+          )
         );
       }
       for (auto& parent: info->klass->parents) {
@@ -9478,4 +9495,7 @@ void Talta::registerAttributes(AltaCore::Filesystem::Path modulePath) {
 
     overridenNames[itemId] = args.front().string;
   }, modulePath.toString());
+  AC_ATTRIBUTE(FunctionDeclarationNode, "CTranspiler", "macro");
+    macroTable[info->function->id] = true;
+  AC_END_ATTRIBUTE;
 };
