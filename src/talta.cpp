@@ -2083,7 +2083,10 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::cast(std::shared_pt
       hoist(component.method, false);
       pushFromGlobal(state);
 
-      if (copy && additionalCopyInfo.first && canCopy()) {
+      // this one is a little different, because we need to make sure we always copy if we can
+      // because were passing the value into a function that assumes it receives a copy it can
+      // push onto the stack and destroy, so we need to make sure that's what it gets
+      if (/*copy &&*/ additionalCopyInfo.first && canCopy(component.method->parameterVariables[0]->type)) {
         result = doCopyCtor(result, currentType, additionalCopyInfo);
         copy = false;
       }

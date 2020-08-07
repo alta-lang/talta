@@ -250,21 +250,21 @@ namespace Talta {
           auto op = std::dynamic_pointer_cast<AAST::BinaryOperation>(node);
           auto det = std::dynamic_pointer_cast<DH::BinaryOperation>(info);
 
-          canCopy = !det->operatorMethod;
+          canCopy = !det->operatorMethod || det->operatorMethod->returnType->referenceLevel() > 0;
           canTempify = !canCopy;
         }
         if (type == ANT::UnaryOperation) {
           auto op = std::dynamic_pointer_cast<AAST::UnaryOperation>(node);
           auto det = std::dynamic_pointer_cast<DH::UnaryOperation>(info);
 
-          canCopy = !det->operatorMethod;
+          canCopy = !det->operatorMethod || det->operatorMethod->returnType->referenceLevel() > 0;
           canTempify = !canCopy;
         }
         if (type == ANT::SubscriptExpression) {
           auto subs = std::dynamic_pointer_cast<AAST::SubscriptExpression>(node);
           auto det = std::dynamic_pointer_cast<DH::SubscriptExpression>(info);
 
-          canCopy = !det->operatorMethod;
+          canCopy = !det->operatorMethod || det->operatorMethod->returnType->referenceLevel() > 0;
           canTempify = !canCopy;
         }
         if (type == ANT::YieldExpression) {
