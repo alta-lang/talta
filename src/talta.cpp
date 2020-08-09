@@ -371,6 +371,11 @@ std::string Talta::headerMangle(AltaCore::DET::ScopeItem* item, bool fullName) {
   } else if (nodeType == NodeType::Class) {
     return "_ALTA_CLASS_" + mangleName(item, fullName);
   } else if (nodeType == NodeType::Namespace) {
+    if (auto ns = dynamic_cast<AltaCore::DET::Namespace*>(item)) {
+      if (ns->underlyingEnumerationType) {
+        return "_ALTA_ENUM_" + mangleName(item, fullName);
+      }
+    }
     return "_ALTA_NS_" + mangleName(item, fullName);
   } else {
     return "";
@@ -642,7 +647,7 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
           {"destructor", target.createType("_Alta_optional_destructor")},
         };
         if (!(*other == DET::Type(DET::NativeType::Void))) {
-          members.push_back({"target", transpileType(other.get())});
+          members.push_back({"target", transpileType(other->deconstify().get())});
         }
         target.insertStructureDefinition("_struct_" + name, members);
         target.insertTypeDefinition(name, target.createType("_struct_" + name, {}, true));
@@ -3557,6 +3562,10 @@ auto Talta::CTranspiler::transpileAccessor(Coroutine& co) -> Coroutine& {
         auto selfInfo = info->target;
         auto self = co.result<CExpression>();
         auto selfType = AltaCore::DET::Type::getUnderlyingType(selfInfo.get());
+        auto selfCopyInfo = additionalCopyInfo(selfAlta, selfInfo);
+        if (selfCopyInfo.second && selfAlta->nodeType() != ANT::FunctionCallExpression) {
+          self = tmpify(self, selfType);
+        }
         if (selfType->pointerLevel() > 0) {
           for (size_t i = 0; i < selfType->pointerLevel(); i++) {
             self = source.createDereference(self);
@@ -6377,6 +6386,8 @@ auto Talta::CTranspiler::transpileSubscriptExpression(Coroutine& co) -> Coroutin
   auto subs = std::dynamic_pointer_cast<AAST::SubscriptExpression>(node);
   auto info = std::dynamic_pointer_cast<DH::SubscriptExpression>(_info);
   if (co.iteration() == 0) {
+    if (info->enumeration)
+      return co.yield<CExpression>(nullptr);
     return co.await(boundTranspile, subs->target, info->target);
   } else if (co.iteration() == 1) {
     co.save(co.result<CExpression>());
@@ -6393,7 +6404,24 @@ auto Talta::CTranspiler::transpileSubscriptExpression(Coroutine& co) -> Coroutin
      * expression to Ceetah right now. so...
      */
     CExpression result = nullptr;
-    if (info->operatorMethod) {
+    if (info->enumeration) {
+      if (info->reverseLookup) {
+        result = source.createFunctionCall(
+          source.createFetch(mangleName(info->enumeration.get()) + "_reverse_lookup"),
+          {
+            cast(cIndex, info->indexType, info->enumeration->underlyingEnumerationType, true, additionalCopyInfo(subs->index, info->index), false, &subs->index->position),
+          }
+        );
+      } else {
+        auto altaRawconststring = std::make_shared<DET::Type>(DET::NativeType::Byte, DET::Type::createModifierVector({ { DET::TypeModifierFlag::Constant, DET::TypeModifierFlag::Pointer }, { DET::TypeModifierFlag::Constant } }));
+        result = source.createFunctionCall(
+          source.createFetch(mangleName(info->enumeration.get()) + "_forward_lookup"),
+          {
+            cast(cIndex, info->indexType, altaRawconststring, true, additionalCopyInfo(subs->index, info->index), false, &subs->index->position),
+          }
+        );
+      }
+    } else if (info->operatorMethod) {
       auto idx = cast(cIndex, info->indexType, info->operatorMethod->parameterVariables.front()->type, true, additionalCopyInfo(subs->index, info->index), false, &subs->index->position);
       for (size_t i = 0; i < info->operatorMethod->parameterVariables.front()->type->referenceLevel(); ++i) {
         idx = source.createPointer(idx);
@@ -8578,6 +8606,7 @@ auto Talta::CTranspiler::transpileEnumerationDefinitionStatement(Coroutine& co) 
   auto info = std::dynamic_pointer_cast<DH::EnumerationDefinitionNode>(_info);
 
   if (co.iteration() == 0) {
+    hoist(info->ns->underlyingEnumerationType, false);
     source.insertFunctionDefinition(mangleName(info->ns.get()) + "_init", {}, source.createType("void"), true);
     co.save<Iterator>(enumer->members.begin());
     return co.yield();
@@ -8689,6 +8718,183 @@ auto Talta::CTranspiler::transpileEnumerationDefinitionStatement(Coroutine& co) 
     }
   } else {
     source.exitInsertionPoint();
+
+    auto underlyingOpt = std::make_shared<DET::Type>(true, info->ns->underlyingEnumerationType);
+    auto rawstringType = std::make_shared<DET::Type>(
+      DET::NativeType::Byte,
+      DET::Type::createModifierVector({
+        { DET::TypeModifierFlag::Constant, DET::TypeModifierFlag::Pointer },
+        { DET::TypeModifierFlag::Constant }
+      })
+    );
+    auto rawstringOpt = std::make_shared<DET::Type>(true, rawstringType);
+
+    // not necessary because `hoist(underlyingOpt, ...)` already does this for us
+    //hoist(info->ns->underlyingEnumerationType, false);
+    hoist(underlyingOpt, false);
+    hoist(rawstringOpt, false);
+
+    source.insertFunctionDefinition(mangleName(info->ns.get()) + "_forward_lookup", {
+      {
+        "index",
+        transpileType(rawstringType.get())
+      },
+    }, transpileType(underlyingOpt.get()));
+    // the scope doesn't need to be attached to anything, it just needs to be unique for the current function
+    // (and an empty one is unique enough)
+    auto forwardScope = std::make_shared<DET::Scope>();
+    stackBookkeepingStart(forwardScope);
+
+    for (auto& [name, var]: info->memberVariables) {
+      source.insertConditionalStatement(
+        source.createBinaryOperation(
+          CAST::OperatorType::EqualTo,
+          source.createFunctionCall(
+            source.createFetch("strcmp"),
+            {
+              source.createFetch("index"),
+              source.createStringLiteral(name),
+            }
+          ),
+          source.createIntegerLiteral(0)
+        )
+      );
+      source.insertBlock();
+      stackBookkeepingStop(forwardScope);
+      source.insertReturnDirective(
+        cast(
+          source.createFetch(mangleName(var.get())),
+          var->type,
+          underlyingOpt,
+          true,
+          { true, false },
+          false,
+          nullptr
+        )
+      );
+      source.exitInsertionPoint();
+      source.exitInsertionPoint();
+    }
+
+    stackBookkeepingStop(forwardScope);
+    source.insertReturnDirective(source.createFunctionCall(source.createFetch("_Alta_make_empty_" + cTypeNameify(underlyingOpt.get())), {}));
+    source.exitInsertionPoint();
+
+    std::shared_ptr<DET::Function> opMethod = nullptr;
+    auto tgtType = info->ns->underlyingEnumerationType;
+    if (tgtType->klass && tgtType->pointerLevel() < 1) {
+      opMethod = tgtType->klass->findOperator(AltaCore::Shared::ClassOperatorType::Equality, AltaCore::Shared::ClassOperatorOrientation::Left, tgtType);
+
+      if (!opMethod) {
+        opMethod = tgtType->klass->findOperator(AltaCore::Shared::ClassOperatorType::Equality, AltaCore::Shared::ClassOperatorOrientation::Right, tgtType);
+      }
+    }
+
+    if (opMethod) {
+      hoist(opMethod, false);
+    }
+
+    source.insertFunctionDefinition(mangleName(info->ns.get()) + "_reverse_lookup", {
+      {
+        "index",
+        transpileType(info->ns->underlyingEnumerationType.get())
+      },
+    }, transpileType(rawstringOpt.get()));
+    auto reverseScope = std::make_shared<DET::Scope>();
+    stackBookkeepingStart(reverseScope);
+
+    if (canPush(info->ns->underlyingEnumerationType)) {
+      source.insertExpressionStatement(
+        source.createFunctionCall(
+          source.createFetch("_Alta_object_stack_push"),
+          {
+            source.createPointer(source.createFetch("_Alta_global_runtime.local")),
+            source.createCast(
+              source.createPointer(source.createFetch("index")),
+              source.createType(
+                "_Alta_object",
+                { { Ceetah::AST::TypeModifierFlag::Pointer } }
+              )
+            ),
+          }
+        )
+      );
+    }
+
+    if (!opMethod && tgtType->pointerLevel() < 1 && (!tgtType->isNative || !tgtType->isRawFunction)) {
+      // silently ingore it
+    } else {
+      for (auto& [name, var]: info->memberVariables) {
+        CExpression test = nullptr;
+
+        if (opMethod) {
+          test = cast(
+            source.createFunctionCall(
+              source.createFetch(mangleName(opMethod.get())),
+              {
+                source.createPointer(source.createFetch(mangleName(var.get()))),
+                doCopyCtor(source.createFetch("index"), tgtType, { true, false }),
+              }
+            ),
+            opMethod->returnType,
+            std::make_shared<DET::Type>(DET::NativeType::Bool),
+            false,
+            { false, true },
+            false,
+            nullptr
+          );
+        } else {
+          test = source.createBinaryOperation(
+            CAST::OperatorType::EqualTo,
+            source.createFetch(mangleName(var.get())),
+            source.createFetch("index")
+          );
+        }
+
+        source.insertConditionalStatement(test);
+        source.insertBlock();
+        stackBookkeepingStop(reverseScope);
+        source.insertReturnDirective(
+          cast(
+            source.createStringLiteral(name),
+            rawstringType,
+            rawstringOpt,
+            true,
+            { false, false },
+            false,
+            nullptr
+          )
+        );
+        source.exitInsertionPoint();
+        source.exitInsertionPoint();
+      }
+    }
+    stackBookkeepingStop(reverseScope);
+    source.insertReturnDirective(source.createFunctionCall(source.createFetch("_Alta_make_empty_" + cTypeNameify(rawstringOpt.get())), {}));
+    source.exitInsertionPoint();
+
+    auto mod = AltaCore::Util::getModule(info->ns->parentScope.lock().get()).lock();
+    auto mangledModName = mangleName(mod.get());
+
+    headerPredeclaration("_ALTA_ENUM_" + mangleName(info->ns.get()), mangledModName);
+    // again, not necessary because `hoist(underlyingOpt, ...)` already does this for us
+    //hoist(info->ns->underlyingEnumerationType, true);
+    hoist(underlyingOpt, true);
+    hoist(rawstringOpt, true);
+    header.insertFunctionDeclaration(mangleName(info->ns.get()) + "_forward_lookup", {
+      {
+        "index",
+        transpileType(rawstringType.get())
+      },
+    }, transpileType(underlyingOpt.get()));
+    header.insertFunctionDeclaration(mangleName(info->ns.get()) + "_reverse_lookup", {
+      {
+        "index",
+        transpileType(info->ns->underlyingEnumerationType.get())
+      },
+    }, transpileType(rawstringOpt.get()));
+    header.exitInsertionPoint();
+
     return co.finalYield();
   }
 };
