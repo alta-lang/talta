@@ -2572,7 +2572,10 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
           source.createFunctionCall(
             source.createFetch(genPrefix + mangledFuncName),
             {
-              source.createFetch("_Alta_generator")
+              source.createCast(
+                source.createFetch("_Alta_generator"),
+                source.createType("_Alta_basic_generator_state", { { CAST::TypeModifierFlag::Pointer } })
+              )
             }
           )
         );
@@ -2609,7 +2612,10 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
             source.createFunctionCall(
               source.createFetch(genPrefix + mangledFuncName),
               {
-                source.createFetch("_Alta_generator")
+                source.createCast(
+                  source.createFetch("_Alta_generator"),
+                  source.createType("_Alta_basic_generator_state", { { CAST::TypeModifierFlag::Pointer } })
+                )
               }
             )
           );
