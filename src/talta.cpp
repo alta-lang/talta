@@ -1190,36 +1190,44 @@ void Talta::CTranspiler::includeClassIfNecessary(std::shared_ptr<AltaCore::DET::
   restoreExportDefinitions(true);
 };
 
+void Talta::CTranspiler::stackBookkeepingStart(std::string temporaryName) {
+  source.insertVariableDefinition(
+    source.createType("size_t"),
+    temporaryName,
+    source.createAccessor(
+      source.createAccessor(
+        source.createFetch("_Alta_global_runtime"),
+        "local"
+      ),
+      "nodeCount"
+    )
+  );
+};
+
 void Talta::CTranspiler::stackBookkeepingStart(std::shared_ptr<AltaCore::DET::Scope> scope) {
   if (!scope->noRuntime) {
-    source.insertVariableDefinition(
-      source.createType("size_t"),
-      mangleName(scope.get()) + "_stack_index",
-      source.createAccessor(
+    stackBookkeepingStart(mangleName(scope.get()) + "_stack_index");
+  }
+};
+
+void Talta::CTranspiler::stackBookkeepingStop(std::string temporaryName) {
+  source.insertExpressionStatement(
+    source.createFunctionCall(source.createFetch("_Alta_object_stack_unwind"), {
+      source.createPointer(
         source.createAccessor(
           source.createFetch("_Alta_global_runtime"),
           "local"
-        ),
-        "nodeCount"
-      )
-    );
-  }
+        )
+      ),
+      source.createFetch(temporaryName),
+      source.createFetch("_Alta_bool_true"),
+    })
+  );
 };
 
 void Talta::CTranspiler::stackBookkeepingStop(std::shared_ptr<AltaCore::DET::Scope> scope) {
   if (!scope->noRuntime) {
-    source.insertExpressionStatement(
-      source.createFunctionCall(source.createFetch("_Alta_object_stack_unwind"), {
-        source.createPointer(
-          source.createAccessor(
-            source.createFetch("_Alta_global_runtime"),
-            "local"
-          )
-        ),
-        source.createFetch(mangleName(scope.get()) + "_stack_index"),
-        source.createFetch("_Alta_bool_true"),
-      })
-    );
+    stackBookkeepingStop(mangleName(scope.get()) + "_stack_index");
   }
 };
 
@@ -5028,6 +5036,8 @@ auto Talta::CTranspiler::transpileClassDefinitionNode(Coroutine& co) -> Coroutin
         std::make_tuple("_isSuper", source.createType("_Alta_bool", { { CAST::TypeModifierFlag::Constant } })),
       }, self);
 
+      stackBookkeepingStart("_Alta_stack_position_class_init");
+
       source.insertExpressionStatement(
         source.createAssignment(
           source.createAccessor(
@@ -5376,6 +5386,7 @@ auto Talta::CTranspiler::transpileClassDefinitionNode(Coroutine& co) -> Coroutin
       return co.yield();
     } else if (loopIteration == 1) {
       auto sbc = co.loadAny();
+      stackBookkeepingStop("_Alta_stack_position_class_init");
       source.insertReturnDirective(source.createFetch("_Alta_self"));
       source.exitInsertionPoint();
 
@@ -5473,7 +5484,7 @@ auto Talta::CTranspiler::transpileClassDefinitionNode(Coroutine& co) -> Coroutin
                   co.result<CExpression>(),
                   DET::Type::getUnderlyingType(memberInfo->varDef->initializationExpression.get()),
                   memberInfo->varDef->variable->type,
-                  false,
+                  true,
                   additionalCopyInfo(member->varDef->initializationExpression, memberInfo->varDef->initializationExpression),
                   false,
                   &member->varDef->initializationExpression->position
