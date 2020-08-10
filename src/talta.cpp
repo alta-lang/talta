@@ -2884,12 +2884,69 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
         }
         source.enterConditionalUltimatum();
         if (info->function->isGenerator) {
+          source.insertBlock();
+
+          // free the stack
+          source.insertExpressionStatement(
+            source.createFunctionCall(
+              source.createFetch("free"),
+              {
+                source.createAccessor(
+                  source.createDereference(source.createFetch("_Alta_generator")),
+                  "stack"
+                ),
+              }
+            )
+          );
+          source.insertExpressionStatement(
+            source.createAssignment(
+              source.createAccessor(
+                source.createDereference(source.createFetch("_Alta_generator")),
+                "stack"
+              ),
+              source.createFetch("NULL")
+            )
+          );
+          source.insertExpressionStatement(
+            source.createAssignment(
+              source.createAccessor(
+                source.createDereference(source.createFetch("_Alta_generator")),
+                "stackSize"
+              ),
+              source.createIntegerLiteral(0)
+            )
+          );
+
+          // free the parameters
+          source.insertExpressionStatement(
+            source.createFunctionCall(
+              source.createFetch("free"),
+              {
+                source.createAccessor(
+                  source.createDereference(source.createFetch("_Alta_generator")),
+                  "parameters"
+                ),
+              }
+            )
+          );
+          source.insertExpressionStatement(
+            source.createAssignment(
+              source.createAccessor(
+                source.createDereference(source.createFetch("_Alta_generator")),
+                "parameters"
+              ),
+              source.createFetch("NULL")
+            )
+          );
+
           source.insertReturnDirective(
             source.createFunctionCall(
               source.createFetch("_Alta_make_empty_" + cTypeNameify(info->function->generatorReturnType->makeOptional().get())),
               {}
             )
           );
+
+          source.exitInsertionPoint();
         } else {
           source.insertReturnDirective();
         }
@@ -3209,6 +3266,59 @@ auto Talta::CTranspiler::transpileReturnDirectiveNode(Coroutine& co) -> Coroutin
             "done"
           ),
           source.createFetch("_Alta_bool_true")
+        )
+      );
+
+      // free the stack
+      source.insertExpressionStatement(
+        source.createFunctionCall(
+          source.createFetch("free"),
+          {
+            source.createAccessor(
+              source.createDereference(source.createFetch("_Alta_generator")),
+              "stack"
+            ),
+          }
+        )
+      );
+      source.insertExpressionStatement(
+        source.createAssignment(
+          source.createAccessor(
+            source.createDereference(source.createFetch("_Alta_generator")),
+            "stack"
+          ),
+          source.createFetch("NULL")
+        )
+      );
+      source.insertExpressionStatement(
+        source.createAssignment(
+          source.createAccessor(
+            source.createDereference(source.createFetch("_Alta_generator")),
+            "stackSize"
+          ),
+          source.createIntegerLiteral(0)
+        )
+      );
+
+      // free the parameters
+      source.insertExpressionStatement(
+        source.createFunctionCall(
+          source.createFetch("free"),
+          {
+            source.createAccessor(
+              source.createDereference(source.createFetch("_Alta_generator")),
+              "parameters"
+            ),
+    }
+        )
+      );
+      source.insertExpressionStatement(
+        source.createAssignment(
+          source.createAccessor(
+            source.createDereference(source.createFetch("_Alta_generator")),
+            "parameters"
+          ),
+          source.createFetch("NULL")
         )
       );
     }
