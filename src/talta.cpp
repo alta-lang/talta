@@ -5913,6 +5913,14 @@ auto Talta::CTranspiler::transpileClassSpecialMethodDefinitionStatement(Coroutin
         tmpName,
         selfInfo
       );
+      for (auto& var: info->klass->members) {
+        auto name = mangleName(var.get());
+        bool didDtor = false;
+        auto maybeDtor = doDtor(source.createAccessor(self, name), var->type, &didDtor);
+        if (didDtor) {
+          source.insertExpressionStatement(maybeDtor);
+        }
+      }
       auto other = source.createDereference(source.createFetch(mangleName(constr->parameterVariables[0].get())));
       source.insertExpressionStatement(
         source.createAssignment(
