@@ -197,6 +197,10 @@ namespace Talta {
   extern ALTACORE_MAP<std::string, bool> varargTable;
   extern ALTACORE_MAP<std::string, std::vector<std::shared_ptr<AltaCore::DET::ScopeItem>>> genericDependencies;
 
+  // not meant to be used by external code
+  // please don't touch this
+  extern ALTACORE_MAP<std::string, std::shared_ptr<AltaCore::DET::Type>> invalidValueExpressionTable;
+
   void registerAttributes(AltaCore::Filesystem::Path modulePath);
 
   class CTranspiler {
@@ -275,6 +279,18 @@ namespace Talta {
 
           canCopy = true;
           canTempify = false;
+        }
+        if (type == ANT::SpecialFetchExpression) {
+          // NOTE: this doesn't technically cover all cases where invalid values could be provided, but
+          // given that invalid values are actually an ugly hack that are only meant to be used internally,
+          // this should be fine for all practical use cases
+          auto special = std::dynamic_pointer_cast<AAST::SpecialFetchExpression>(node);
+          auto det = std::dynamic_pointer_cast<DH::SpecialFetchExpression>(info);
+
+          if (invalidValueExpressionTable.find(det->id) != invalidValueExpressionTable.end()) {
+            canCopy = false;
+            canTempify = true;
+          }
         }
         return std::make_pair(
           (
