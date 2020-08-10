@@ -2698,6 +2698,14 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
           })
         );
         source.insertExpressionStatement(
+          source.createFunctionCall(source.createFetch("atexit"), {
+            source.createCast(
+              source.createFetch("_Alta_module_deinit_" + mangledModName),
+              source.createType(source.createType("void"), { source.createType("void") }, std::vector<uint8_t> {})
+            )
+          })
+        );
+        source.insertExpressionStatement(
           source.createFunctionCall(
             source.createFetch("_Alta_module_init_" + mangledModName),
             {}
@@ -9031,6 +9039,20 @@ auto Talta::CTranspiler::transpileEnumerationDefinitionStatement(Coroutine& co) 
     }, transpileType(rawstringOpt.get()));
     header.exitInsertionPoint();
 
+    source.insertFunctionDefinition(mangleName(info->ns.get()) + "_deinit", {}, source.createType("void"), true);
+    if (canDestroy(info->ns->underlyingEnumerationType)) {
+      for (auto& [name, var]: info->memberVariables) {
+        source.insertExpressionStatement(
+          doDtor(
+            source.createFetch(mangleName(var.get())),
+            info->ns->underlyingEnumerationType,
+            nullptr
+          )
+        );
+      }
+    }
+    source.exitInsertionPoint();
+
     return co.finalYield();
   }
 };
@@ -9281,6 +9303,7 @@ void Talta::CTranspiler::transpile(std::shared_ptr<AltaCore::AST::RootNode> alta
   header.insertPreprocessorConditional("!defined(_ALTA_INIT_" + mangledModuleName + ')');
   header.insertPreprocessorDefinition("_ALTA_INIT_" + mangledModuleName);
   header.insertFunctionDeclaration("_Alta_module_init_" + mangledModuleName, {}, voidType);
+  header.insertFunctionDeclaration("_Alta_module_deinit_" + mangledModuleName, {}, voidType);
   header.exitInsertionPoint();
 
   source.insertFunctionDefinition("_Alta_module_init_" + mangledModuleName, {}, voidType);
@@ -9686,7 +9709,15 @@ void Talta::CTranspiler::transpile(std::shared_ptr<AltaCore::AST::RootNode> alta
           source.createFetch(
             mangleName(det->variable.get())
           ),
-          transpile(var->initializationExpression, det->initializationExpression)
+          cast(
+            transpile(var->initializationExpression, det->initializationExpression),
+            DET::Type::getUnderlyingType(det->initializationExpression.get()),
+            det->variable->type,
+            true,
+            additionalCopyInfo(var->initializationExpression, det->initializationExpression),
+            false,
+            &var->initializationExpression->position
+          )
         )
       );
     } else if (stmt->nodeType() == AAST::NodeType::ClassDefinitionNode) {
@@ -9715,6 +9746,60 @@ void Talta::CTranspiler::transpile(std::shared_ptr<AltaCore::AST::RootNode> alta
       source.insertExpressionStatement(
         source.createFunctionCall(
           source.createFetch(mangleName(info->ns.get()) + "_init"),
+          {}
+        )
+      );
+    }
+  }
+
+  source.exitInsertionPoint();
+
+  source.insertFunctionDefinition("_Alta_module_deinit_" + mangledModuleName, {}, voidType);
+  source.insertExpressionStatement(source.createFetch("static _Alta_bool alreadyDeinited = _Alta_bool_false"));
+  source.insertConditionalStatement(source.createFetch("alreadyDeinited"));
+  source.insertReturnDirective();
+  source.exitInsertionPoint();
+  source.insertExpressionStatement(
+    source.createAssignment(
+      source.createFetch("alreadyDeinited"),
+      source.createFetch("_Alta_bool_true")
+    )
+  );
+
+  for (auto& mod: currentModule->dependencies) {
+    source.insertExpressionStatement(
+      source.createFunctionCall(
+        source.createFetch("_Alta_module_deinit_" + mangleName(mod.get())),
+        {}
+      )
+    );
+  }
+
+  for (size_t i = 0; i < altaRoot->statements.size(); i++) {
+    auto& stmt = altaRoot->statements[i];
+    auto& stmtInfo = altaRoot->info->statements[i];
+
+    if (stmt->nodeType() == AAST::NodeType::ExpressionStatement) {
+      auto exprStmt = std::dynamic_pointer_cast<AAST::ExpressionStatement>(stmt);
+      auto exprStmtInfo = std::dynamic_pointer_cast<DH::ExpressionStatement>(stmtInfo);
+
+      if (exprStmt->expression->nodeType() != AAST::NodeType::VariableDefinitionExpression) continue;
+      auto var = std::dynamic_pointer_cast<AAST::VariableDefinitionExpression>(exprStmt->expression);
+      auto det = std::dynamic_pointer_cast<DH::VariableDefinitionExpression>(exprStmtInfo->expression);
+      if (!var->initializationExpression || det->variable->type->isNative || det->variable->type->indirectionLevel() > 0) continue;
+
+      bool didDtor = false;
+      auto maybeDtor = doDtor(source.createFetch(mangleName(det->variable.get())), det->variable->type, &didDtor);
+      if (didDtor) {
+        source.insertExpressionStatement(maybeDtor);
+      }
+    } else if (stmt->nodeType() == AAST::NodeType::EnumerationDefinitionNode) {
+      auto enumer = std::dynamic_pointer_cast<AAST::EnumerationDefinitionNode>(stmt);
+      auto info = std::dynamic_pointer_cast<DH::EnumerationDefinitionNode>(stmtInfo);
+
+      source.insertExpressionStatement(
+        source.createFunctionCall(
+          source.createFetch(mangleName(info->ns.get()) + "_deinit"),
           {}
         )
       );
