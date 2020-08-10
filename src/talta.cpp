@@ -3309,7 +3309,7 @@ auto Talta::CTranspiler::transpileReturnDirectiveNode(Coroutine& co) -> Coroutin
               source.createDereference(source.createFetch("_Alta_generator")),
               "parameters"
             ),
-    }
+          }
         )
       );
       source.insertExpressionStatement(
@@ -7142,6 +7142,7 @@ auto Talta::CTranspiler::transpileRangedForLoopStatement(Coroutine& co) -> Corou
       source.insertBlock();
       stackBookkeepingStart(info->scope);
       if (!info->end) {
+        doDtor(source.createFetch("_Alta_iterator_maybe_" + mangledCounter), info->next->returnType, nullptr);
         source.insertExpressionStatement(
           source.createAssignment(
             source.createFetch("_Alta_iterator_maybe_" + mangledCounter),
