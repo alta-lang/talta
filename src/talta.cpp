@@ -1082,6 +1082,20 @@ void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, b
         target.insertFunctionDefinition("_destroy_" + name, {
           std::make_tuple("self", target.createType(name, { { Ceetah::AST::TypeModifierFlag::Pointer } }))
         }, target.createType("void"), true);
+        target.insertConditionalStatement(
+          target.createBinaryOperation(
+            Ceetah::AST::OperatorType::EqualTo,
+            target.createAccessor(
+              target.createDereference(
+                target.createFetch("self")
+              ),
+              "typeName"
+            ),
+            target.createFetch("NULL")
+          )
+        );
+        target.insertReturnDirective();
+        target.exitInsertionPoint();
         i = 0;
         for (auto& item: type->unionOf) {
           if (item->indirectionLevel() == 0 && canDestroy(item)) {
@@ -1695,14 +1709,24 @@ auto Talta::CTranspiler::tmpify(Coroutine& co) -> Coroutine& {
       }
       if (!currentScope->noRuntime && canPush(type)) {
         source.insertExpressionStatement(
-          source.createMultiExpression({
-            source.createAssignment(
-              source.createAccessor(
-                bareFetch,
-                "objectType"
-              ),
-              source.createFetch("_Alta_object_type_class")
+          source.createAssignment(
+            source.createAccessor(
+              bareFetch,
+              "objectType"
             ),
+            source.createFetch(
+              type->isOptional
+              ? "_Alta_object_type_optional"
+              : type->isUnion()
+                ? "_Alta_object_type_union"
+                : type->isFunction && !type->isRawFunction
+                  ? "_Alta_object_type_function"
+                  : "_Alta_object_type_class"
+            )
+          )
+        );
+        if (type->klass) {
+          source.insertExpressionStatement(
             source.createAssignment(
               source.createAccessor(
                 source.createAccessor(
@@ -1712,9 +1736,9 @@ auto Talta::CTranspiler::tmpify(Coroutine& co) -> Coroutine& {
                 "destroyed"
               ),
               source.createFetch("_Alta_bool_true")
-            ),
-          })
-        );
+            )
+          );
+        }
         if (!inGenerator) {
           source.insertExpressionStatement(
             source.createFunctionCall(
@@ -1759,14 +1783,24 @@ auto Talta::CTranspiler::tmpify(CExpression expr, std::shared_ptr<AltaCore::DET:
   }
   if (withStack && !currentScope->noRuntime && canPush(type)) {
     source.insertExpressionStatement(
-      source.createMultiExpression({
-        source.createAssignment(
-          source.createAccessor(
-            bareFetch,
-            "objectType"
-          ),
-          source.createFetch("_Alta_object_type_class")
+      source.createAssignment(
+        source.createAccessor(
+          bareFetch,
+          "objectType"
         ),
+        source.createFetch(
+          type->isOptional
+          ? "_Alta_object_type_optional"
+          : type->isUnion()
+            ? "_Alta_object_type_union"
+            : type->isFunction && !type->isRawFunction
+              ? "_Alta_object_type_function"
+              : "_Alta_object_type_class"
+        )
+      )
+    );
+    if (type->klass) {
+      source.insertExpressionStatement(
         source.createAssignment(
           source.createAccessor(
             source.createAccessor(
@@ -1776,9 +1810,9 @@ auto Talta::CTranspiler::tmpify(CExpression expr, std::shared_ptr<AltaCore::DET:
             "destroyed"
           ),
           source.createFetch("_Alta_bool_true")
-        ),
-      })
-    );
+        )
+      );
+    }
     if (!inGenerator) {
       source.insertExpressionStatement(
         source.createFunctionCall(
@@ -5615,6 +5649,33 @@ auto Talta::CTranspiler::transpileClassDefinitionNode(Coroutine& co) -> Coroutin
                 )
               )
             );
+          } else {
+            CExpression init = nullptr;
+            if (memberInfo->varDef->type->type->pointerLevel() > 0) {
+              init = source.createFetch("NULL");
+            } else if (memberInfo->varDef->type->type->isNative || (memberInfo->varDef->type->type->klass && memberInfo->varDef->type->type->klass->isStructure)) {
+              init = source.createArrayLiteral({ source.createIntegerLiteral(0) }, transpileType(memberInfo->varDef->type->type.get()));
+            } else if (memberInfo->varDef->type->type->isOptional) {
+              init = source.createFunctionCall(source.createFetch("_Alta_make_empty_" + cTypeNameify(memberInfo->varDef->type->type.get())), {});
+            } else if (!memberInfo->varDef->type->type->isUnion()) {
+              auto state = popToGlobal();
+              hoist(memberInfo->varDef->type->type->klass->defaultConstructor);
+              init = source.createFunctionCall(source.createFetch("_cn_" + mangleName(memberInfo->varDef->type->type->klass->defaultConstructor.get())), {});
+              pushFromGlobal(state);
+            } else {
+              throw std::runtime_error("this shouldn't happen (we can't default construct this value; AltaCore should've already taken care of this for us)");
+            }
+            source.insertExpressionStatement(
+              source.createAssignment(
+                source.createAccessor(
+                  source.createDereference(
+                    source.createFetch("_Alta_self")
+                  ),
+                  mangledMemberName
+                ),
+                init
+              )
+            );
           }
           co.save(isGeneric, genericIndex, loopIteration);
           co.saveAny(sbc);
@@ -6380,7 +6441,13 @@ auto Talta::CTranspiler::transpileDereferenceExpression(Coroutine& co) -> Corout
     auto tgtType = DET::Type::getUnderlyingType(info->target.get());
     CExpression result = nullptr;
     if (tgtType->isOptional) {
-      result = source.createAccessor(expr, "target");
+      if (additionalCopyInfo(deref->target, info->target).second) {
+        std::shared_ptr<CAST::MultiExpression> exprs = std::dynamic_pointer_cast<CAST::MultiExpression>(tmpify(expr, tgtType));
+        exprs->expressions.back() = source.createAccessor(exprs->expressions.back(), "target");
+        result = exprs;
+      } else {
+        result = source.createAccessor(expr, "target");
+      }
       for (size_t i = 0; i < tgtType->optionalTarget->referenceLevel(); ++i) {
         result = source.createDereference(result);
       }
@@ -8066,7 +8133,7 @@ auto Talta::CTranspiler::transpileLambdaExpression(Coroutine& co) -> Coroutine& 
         hoist(hoistedType, false, false);
       }
       for (auto& hoistedType: info->function->privateHoistedItems) {
-        hoist(hoistedType, false, false);
+        hoist(hoistedType, false);
       }
 
       auto mangledFuncName = "_Alta_lambda_" + mangleName(info->inputScope.get()) + "_10_" + std::to_string(info->function->itemID);
