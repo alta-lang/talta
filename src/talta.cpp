@@ -6297,6 +6297,83 @@ auto Talta::CTranspiler::transpileClassSpecialMethodDefinitionStatement(Coroutin
 
     header.exitInsertionPoint();
 
+    for (auto& [variant, optionalValueProvided]: info->optionalVariantFunctions) {
+      std::vector<std::tuple<std::string, std::shared_ptr<CAST::Type>>> cVariantParams;
+      auto mangledVariantName = mangleName(variant.get());
+
+      size_t optIdx = 0;
+      size_t variantIdx = 0;
+      for (size_t i = 0; i < info->parameters.size(); ++i) {
+        if (info->parameters[i]->defaultValue && !optionalValueProvided[optIdx++])
+          continue;
+        auto& var = variant->parameterVariables[variantIdx];
+        auto& param = special->parameters[i];
+        auto& paramInfo = info->parameters[i];
+        auto type = (param->isVariable) ? paramInfo->type->type->point() : paramInfo->type->type;
+        auto mangled = mangleName(var.get());
+        if (param->isVariable) {
+          mangled = mangled.substr(12);
+        }
+        cVariantParams.push_back({ (param->isVariable ? "_Alta_array_" : "") + mangled, transpileType(type.get()) });
+        if (param->isVariable) {
+          cVariantParams.push_back({ "_Alta_array_length_" + mangled, size_tType });
+        }
+        ++variantIdx;
+      }
+
+      std::vector<CExpression> args;
+
+      optIdx = 0;
+      variantIdx = 0;
+      for (size_t i = 0; i < info->parameters.size(); ++i) {
+        if (info->parameters[i]->defaultValue && !optionalValueProvided[optIdx++]) {
+          auto transpiled = transpile(special->parameters[i]->defaultValue, info->parameters[i]->defaultValue);
+          args.push_back(cast(
+            transpiled,
+            DET::Type::getUnderlyingType(info->parameters[i]->defaultValue.get()),
+            info->parameters[i]->type->type,
+            false,
+            additionalCopyInfo(special->parameters[i]->defaultValue, info->parameters[i]->defaultValue),
+            false,
+            &special->parameters[i]->defaultValue->position
+          ));
+        } else {
+          args.push_back(source.createFetch(mangleName(variant->parameterVariables[variantIdx++].get())));
+        }
+      }
+
+      if (!currentScope->noRuntime) {
+        source.insertFunctionDefinition("_cp_" + mangledVariantName, cVariantParams, retPtr);
+        source.insertReturnDirective(
+          source.createFunctionCall(
+            source.createFetch("_cp_" + mangledName),
+            args
+          )
+        );
+        source.exitInsertionPoint();
+      }
+      source.insertFunctionDefinition("_cn_" + mangledVariantName, cVariantParams, ret);
+      source.insertReturnDirective(
+        source.createFunctionCall(
+          source.createFetch("_cn_" + mangledName),
+          args
+        )
+      );
+      source.exitInsertionPoint();
+
+      auto mod = AltaCore::Util::getModule(variant->parentScope.lock().get()).lock();
+      headerPredeclaration(headerMangle(variant.get()), mangleName(mod.get()), true);
+      for (auto& hoistedType: variant->publicHoistedItems) {
+        hoist(hoistedType, true);
+      }
+      hoist(variant->returnType, true);
+      if (!currentScope->noRuntime) {
+        header.insertFunctionDeclaration("_cp_" + mangledVariantName, cVariantParams, retPtr);
+      }
+      header.insertFunctionDeclaration("_cn_" + mangledVariantName, cVariantParams, ret);
+      header.exitInsertionPoint();
+    }
+
     return co.finalYield();
   }
 };
