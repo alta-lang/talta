@@ -3906,7 +3906,7 @@ auto Talta::CTranspiler::transpileAssignmentExpression(Coroutine& co) -> Corouti
     auto tgtType = info->targetType;
     auto origTgtType = tgtType;
     bool isNullopt = tgtType->isOptional && tgtType->pointerLevel() < 1 && assign->value->nodeType() == ANT::NullptrExpression;
-    bool canCopy = !isNullopt && !tgtType->isNative && tgtType->pointerLevel() < 1 && (!info->strict || tgtType->indirectionLevel() < 1);
+    bool canCopy = !isNullopt && (!tgtType->isNative || !tgtType->isRawFunction) && tgtType->pointerLevel() < 1 && (!info->strict || tgtType->indirectionLevel() < 1);
     bool canDestroyVar = !info->operatorMethod && !info->strict && canDestroy(tgtType);
 
     std::vector<CExpression> exprs;
