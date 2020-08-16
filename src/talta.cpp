@@ -3682,15 +3682,26 @@ auto Talta::CTranspiler::transpileAccessor(Coroutine& co) -> Coroutine& {
       }
 
       if (!currentScope->noRuntime && canPush(info->readAccessor->returnType)) {
+        auto& retType = info->readAccessor->returnType;
         source.insertExpressionStatement(
-          source.createMultiExpression({
-            source.createAssignment(
-              source.createAccessor(
-                fetchTemp(tmpName),
-                "objectType"
-              ),
-              source.createFetch("_Alta_object_type_class")
+          source.createAssignment(
+            source.createAccessor(
+              fetchTemp(tmpName),
+              "objectType"
             ),
+            source.createFetch(
+              retType->isOptional
+              ? "_Alta_object_type_optional"
+              : retType->isUnion()
+                ? "_Alta_object_type_union"
+                : retType->isFunction && !retType->isRawFunction
+                  ? "_Alta_object_type_function"
+                  : "_Alta_object_type_class"
+            )
+          )
+        );
+        if (retType->klass) {
+          source.insertExpressionStatement(
             source.createAssignment(
               source.createAccessor(
                 source.createAccessor(
@@ -3700,9 +3711,9 @@ auto Talta::CTranspiler::transpileAccessor(Coroutine& co) -> Coroutine& {
                 "destroyed"
               ),
               source.createFetch("_Alta_bool_true")
-            ),
-          })
-        );
+            )
+          );
+        }
         if (!inGenerator) {
           source.insertExpressionStatement(
             source.createFunctionCall(
@@ -6522,6 +6533,18 @@ auto Talta::CTranspiler::transpileDereferenceExpression(Coroutine& co) -> Corout
         std::shared_ptr<CAST::MultiExpression> exprs = std::dynamic_pointer_cast<CAST::MultiExpression>(tmpify(expr, tgtType));
         exprs->expressions.back() = source.createAccessor(exprs->expressions.back(), "target");
         result = exprs;
+      } else if (auto multi = std::dynamic_pointer_cast<CAST::MultiExpression>(expr)) {
+        bool didIt = false;
+        if (auto var = std::dynamic_pointer_cast<CAST::Fetch>(multi->expressions.back())) {
+          if (var->query.find("_temp_var_") != std::string::npos) {
+            multi->expressions.back() = source.createAccessor(multi->expressions.back(), "target");
+            result = multi;
+            didIt = true;
+          }
+        }
+        if (!didIt) {
+          result = source.createAccessor(expr, "target");
+        }
       } else {
         result = source.createAccessor(expr, "target");
       }
