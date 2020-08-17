@@ -9350,21 +9350,27 @@ auto Talta::CTranspiler::transpileYieldExpression(Coroutine& co) -> Coroutine& {
   auto info = std::dynamic_pointer_cast<DH::YieldExpression>(_info);
 
   if (co.iteration() == 0) {
-    return co.await(boundTranspile, yield->target, info->target);
-  } else {
-    auto transpiled = co.result<CExpression>();
-    CExpression expr = nullptr;
-    auto& functionReturnType = info->generator->generatorReturnType;
-
-    // if we're returing a reference, there's no need to copy anything
-    if (functionReturnType->referenceLevel() > 0) {
-      expr = transpiled;
+    if (yield->target) {
+      return co.await(boundTranspile, yield->target, info->target);
     } else {
-      auto exprType = AltaCore::DET::Type::getUnderlyingType(info->target.get());
-      expr = cast(transpiled, exprType, functionReturnType, true, additionalCopyInfo(yield->target, info->target), false, &yield->target->position);
+      return co.yield();
     }
-    for (size_t i = 0; i < functionReturnType->referenceLevel(); i++) {
-      expr = source.createPointer(expr);
+  } else {
+    auto transpiled = yield->target ? co.result<CExpression>() : nullptr;
+    CExpression expr = nullptr;
+
+    if (info->generator->isGenerator) {
+      auto& functionReturnType = info->generator->generatorReturnType;
+      // if we're returing a reference, there's no need to copy anything
+      if (functionReturnType->referenceLevel() > 0) {
+        expr = transpiled;
+      } else {
+        auto exprType = AltaCore::DET::Type::getUnderlyingType(info->target.get());
+        expr = cast(transpiled, exprType, functionReturnType, true, additionalCopyInfo(yield->target, info->target), false, &yield->target->position);
+      }
+      for (size_t i = 0; i < functionReturnType->referenceLevel(); i++) {
+        expr = source.createPointer(expr);
+      }
     }
 
     std::string tmpName;
@@ -9385,14 +9391,18 @@ auto Talta::CTranspiler::transpileYieldExpression(Coroutine& co) -> Coroutine& {
       )
     );
 
-    source.insertReturnDirective(
-      source.createFunctionCall(
-        source.createFetch("_Alta_make_" + cTypeNameify(info->generator->generatorReturnType->makeOptional().get())),
-        {
-          source.createFetch(tmpName),
-        }
-      )
-    );
+    if (info->generator->isGenerator) {
+      source.insertReturnDirective(
+        source.createFunctionCall(
+          source.createFetch("_Alta_make_" + cTypeNameify(info->generator->generatorReturnType->makeOptional().get())),
+          {
+            source.createFetch(tmpName),
+          }
+        )
+      );
+    } else {
+      source.insertReturnDirective();
+    }
     toFunctionRoot();
     source.insertLabel('_' + std::to_string(generatorScopeCount++));
     source.insertBlock();
