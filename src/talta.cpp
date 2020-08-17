@@ -103,6 +103,7 @@ namespace Talta {
     { ANT::EnumerationDefinitionNode, &CTranspiler::transpileEnumerationDefinitionStatement },
     { ANT::YieldExpression, &CTranspiler::transpileYieldExpression },
     { ANT::AssertionStatement, &CTranspiler::transpileAssertionStatement },
+    { ANT::AwaitExpression, &CTranspiler::transpileAwaitExpression },
   };
 
   const CTranspiler::CopyInfo CTranspiler::defaultCopyInfo = std::make_pair(false, false);
@@ -9525,6 +9526,92 @@ auto Talta::CTranspiler::transpileAssertionStatement(Coroutine& co) -> Coroutine
     source.exitInsertionPoint();
 
     return co.finalYield();
+  }
+};
+
+auto Talta::CTranspiler::transpileAwaitExpression(Coroutine& co) -> Coroutine& {
+  auto [node, _info] = co.arguments();
+  auto await = std::dynamic_pointer_cast<AAST::AwaitExpression>(node);
+  auto info = std::dynamic_pointer_cast<DH::AwaitExpression>(_info);
+
+  if (co.iteration() == 0) {
+    return co.await(boundTranspile, await->target, info->target);
+  } else {
+    CExpression expr = co.result<CExpression>();
+    auto tgtType = DET::Type::getUnderlyingType(info->target.get());
+    auto coroValueFunc = std::dynamic_pointer_cast<DET::Function>(tgtType->klass->scope->findAll("value", {}, false, info->inputScope)[0]);
+    auto coroReturnType = coroValueFunc->returnType->optionalTarget;
+
+    if (additionalCopyInfo(await->target, info->target).second) {
+      auto multi = std::dynamic_pointer_cast<CAST::MultiExpression>(tmpify(expr, tgtType));
+      source.insertExpressionStatement(multi->expressions.front());
+      expr = multi->expressions.back();
+    }
+
+    // TODO: when we start passing stuff to the scheduler, we need to tmpify the pointer it gives back to us
+    //       so we don't have to insert the same expression multiple times (possibly with side effects)
+    //
+    //       remember to create the temporary variable BEFORE calling the scheduling function, because creating
+    //       a variable in a generator/coroutine requires a reallocation of the stack and invalidates
+    //       all previous stack variables
+    //
+    // POSSIBLE TODO: maybe we should determine the maximum stack size for each generator/coroutine at compilation time,
+    //                allocate that at runtime, and free it when we're done
+    //                the current approach was chosen to save memory so that we only allocate what we need
+    //
+    //                we could maybe take a hybrid approach where we allocate each scope's stack separately,
+    //                since, once we enter a scope, we're guaranteed to use all the variables allocated in it,
+    //                and this would still save more memory than allocating for ALL scopes at once (and would require
+    //                less contiguous memory), because if we don't reach a scope, we don't allocate for it
+    //                yeah, this is actually a great idea; i'm going to implement soon after i have basic working `await`
+
+    source.insertExpressionStatement(
+      source.createAssignment(
+        source.createAccessor(
+          source.createDereference(source.createFetch("_Alta_coroutine")),
+          "index"
+        ),
+        source.createIntegerLiteral(generatorScopeCount)
+      )
+    );
+    source.insertExpressionStatement(
+      source.createAssignment(
+        source.createAccessor(
+          source.createDereference(source.createFetch("_Alta_coroutine")),
+          "waitingFor"
+        ),
+        source.createPointer(expr)
+      )
+    );
+
+    // TODO: pass `expr` to the scheduler
+
+    source.insertReturnDirective();
+    toFunctionRoot();
+    source.insertLabel('_' + std::to_string(generatorScopeCount++));
+    source.insertBlock();
+    loadGenerator();
+
+    if (*coroReturnType == DET::Type(DET::NativeType::Void)) {
+      return co.finalYield<CExpression>(
+        source.createCast(
+          source.createIntegerLiteral(0),
+          source.createType("void")
+        )
+      );
+    } else {
+      return co.finalYield<CExpression>(
+        source.createDereference(
+          source.createCast(
+            source.createAccessor(
+              expr,
+              "value"
+            ),
+            transpileType(coroReturnType->point().get())
+          )
+        )
+      );
+    }
   }
 };
 // </transpilation-coroutines>

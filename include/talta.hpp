@@ -426,6 +426,7 @@ namespace Talta {
       Coroutine& transpileEnumerationDefinitionStatement(Coroutine& co);
       Coroutine& transpileYieldExpression(Coroutine& co);
       Coroutine& transpileAssertionStatement(Coroutine& co);
+      Coroutine& transpileAwaitExpression(Coroutine& co);
       // </transpilation-methods>
 
       static const ALTACORE_MAP<AltaCore::AST::NodeType, CoroutineMemberFunction> transpilationMethods;
