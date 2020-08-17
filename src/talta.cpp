@@ -2516,6 +2516,7 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
 
       if (info->function->isGenerator || info->function->isAsync) {
         auto& genClass = info->function->isGenerator ? info->generator : info->coroutine;
+        auto nextFunc = std::dynamic_pointer_cast<DET::Function>(genClass->scope->items[info->function->isGenerator ? 1 : 2]);
         source.insertFunctionDeclaration(genPrefix + mangledFuncName, {
           std::make_tuple("_Alta_generator", source.createType(info->function->isAsync ? "_Alta_basic_coroutine_state" : "_Alta_basic_generator_state", { { CAST::TypeModifierFlag::Pointer } })),
         }, returnType);
@@ -2576,13 +2577,33 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
           )
         );
         if (info->function->isMethod) {
+        source.insertExpressionStatement(
+          source.createAssignment(
+            source.createAccessor((source.createFetch("_Alta_generator")), "self"),
+            info->function->isMethod
+              ?
+                std::dynamic_pointer_cast<CAST::Expression>(
+                  source.createCast(
+                    source.createFetch("_Alta_self"),
+                    source.createType("_Alta_basic_class", { { CAST::TypeModifierFlag::Pointer } } )
+                  )
+                )
+              :
+                source.createFetch("NULL")
+          )
+        );
+        }
+        if (info->function->isAsync) {
           source.insertExpressionStatement(
             source.createAssignment(
-              source.createAccessor((source.createFetch("_Alta_generator")), "self"),
-              source.createCast(
-                source.createFetch("_Alta_self"),
-                source.createType("_Alta_basic_class", { { CAST::TypeModifierFlag::Pointer } } )
-              )
+              source.createAccessor((source.createFetch("_Alta_generator")), "waitingFor"),
+              source.createFetch("NULL")
+            )
+          );
+          source.insertExpressionStatement(
+            source.createAssignment(
+              source.createAccessor((source.createFetch("_Alta_generator")), "next"),
+              source.createFetch(genPrefix + mangledFuncName)
             )
           );
         }
@@ -2617,15 +2638,17 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
         source.insertReturnDirective(source.createFetch("_Alta_generator"));
         source.exitInsertionPoint();
 
-        source.insertFunctionDefinition(mangleName(genClass->scope->items[info->function->isGenerator ? 1 : 2].get()), {
+        source.insertFunctionDefinition(mangleName(nextFunc.get()), {
           std::make_tuple("_Alta_generator", source.createType(mangleName(genClass.get()), { { CAST::TypeModifierFlag::Pointer } })),
         }, returnType);
-        source.insertExpressionStatement(
-          source.createAssignment(
-            source.createAccessor(source.createDereference(source.createFetch("_Alta_generator")), "input"),
-            source.createFetch("NULL")
-          )
-        );
+        if (!info->function->isAsync) {
+          source.insertExpressionStatement(
+            source.createAssignment(
+              source.createAccessor(source.createDereference(source.createFetch("_Alta_generator")), "input"),
+              source.createFetch("NULL")
+            )
+          );
+        }
         source.insertReturnDirective(
           source.createFunctionCall(
             source.createFetch(genPrefix + mangledFuncName),
@@ -3114,6 +3137,7 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
           if (info->function->isAsync) {
             members.push_back(std::make_pair("value", header.createType("void", { { CAST::TypeModifierFlag::Pointer } })));
             members.push_back(std::make_pair("waitingFor", header.createType("_Alta_basic_coroutine_state", { { CAST::TypeModifierFlag::Pointer } })));
+            members.push_back(std::make_pair("next", header.createType("_Alta_basic_coroutine_runner")));
           }
           header.insertStructureDefinition("_s_" + mangledGenName, members);
           header.insertTypeDefinition(mangledGenName, header.createType("_s_" + mangledGenName, {}, true));
@@ -3209,48 +3233,50 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
           ++variantIdx;
         }
 
-        if (variant->isGenerator || variant->isAsync) {
-          // TODO
-        } else {
-          source.insertFunctionDefinition(mangledVariantName, cVariantParams, returnType);
-          std::vector<CExpression> args;
+        auto genClass =
+          info->function->isGenerator
+          ? info->generator
+          : info->function->isAsync
+            ? info->coroutine
+            : nullptr;
+        source.insertFunctionDefinition(mangledVariantName, cVariantParams, (genClass) ? source.createType(mangleName(genClass.get())) : returnType);
+        std::vector<CExpression> args;
 
-          if (info->function->isMethod) {
-            args.push_back(source.createFetch("_Alta_self"));
-          }
-
-          optIdx = 0;
-          variantIdx = 0;
-          for (size_t i = 0; i < info->parameters.size(); ++i) {
-            if (info->parameters[i]->defaultValue && !optionalValueProvided[optIdx++]) {
-              // DONT DO THIS!!! THIS IS A TERRIBLE HACK!!!
-              // please please please always use co.await!
-              // i only did this right now because i really want to see this feature work right now
-              // and i dont feel like reworking all this code to fit neatly into another coroutine iteration,
-              // but this can cause all sorts of trouble (mainly: stack explosions!!!),
-              // so please, i beg you, USE THE DAMN COROUTINES
-              auto transpiled = transpile(func->parameters[i]->defaultValue, info->parameters[i]->defaultValue);
-              args.push_back(cast(
-                transpiled,
-                DET::Type::getUnderlyingType(info->parameters[i]->defaultValue.get()),
-                info->parameters[i]->type->type,
-                false,
-                additionalCopyInfo(func->parameters[i]->defaultValue, info->parameters[i]->defaultValue),
-                false,
-                &func->parameters[i]->defaultValue->position
-              ));
-            } else {
-              args.push_back(source.createFetch(mangleName(variant->parameterVariables[variantIdx++].get())));
-            }
-          }
-          source.insertReturnDirective(
-            source.createFunctionCall(
-              source.createFetch(mangledFuncName),
-              args
-            )
-          );
-          source.exitInsertionPoint();
+        if (info->function->isMethod) {
+          args.push_back(source.createFetch("_Alta_self"));
         }
+
+        optIdx = 0;
+        variantIdx = 0;
+        for (size_t i = 0; i < info->parameters.size(); ++i) {
+          if (info->parameters[i]->defaultValue && !optionalValueProvided[optIdx++]) {
+            // DONT DO THIS!!! THIS IS A TERRIBLE HACK!!!
+            // please please please always use co.await!
+            // i only did this right now because i really want to see this feature work right now
+            // and i dont feel like reworking all this code to fit neatly into another coroutine iteration,
+            // but this can cause all sorts of trouble (mainly: stack explosions!!!),
+            // so please, i beg you, USE THE DAMN COROUTINES
+            auto transpiled = transpile(func->parameters[i]->defaultValue, info->parameters[i]->defaultValue);
+            args.push_back(cast(
+              transpiled,
+              DET::Type::getUnderlyingType(info->parameters[i]->defaultValue.get()),
+              info->parameters[i]->type->type,
+              false,
+              additionalCopyInfo(func->parameters[i]->defaultValue, info->parameters[i]->defaultValue),
+              false,
+              &func->parameters[i]->defaultValue->position
+            ));
+          } else {
+            args.push_back(source.createFetch(mangleName(variant->parameterVariables[variantIdx++].get())));
+          }
+        }
+        source.insertReturnDirective(
+          source.createFunctionCall(
+            source.createFetch(mangledFuncName),
+            args
+          )
+        );
+        source.exitInsertionPoint();
 
         auto mod = AltaCore::Util::getModule(variant->parentScope.lock().get()).lock();
         auto mangledModName = mangleName(mod.get());
