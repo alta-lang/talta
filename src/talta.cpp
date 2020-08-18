@@ -453,9 +453,11 @@ std::string Talta::mangleName(AltaCore::DET::ScopeItem* item, bool fullName) {
   } else if (nodeType == NodeType::Variable) {
     auto var = dynamic_cast<DET::Variable*>(item);
     isLiteral = isLiteral || var->isLiteral;
-    if (auto ps = var->parentScope.lock()) {
-      if (auto pc = ps->parentClass.lock()) {
-        isLiteral = pc->isLiteral;
+    if (!isLiteral) {
+      if (auto ps = var->parentScope.lock()) {
+        if (auto pc = ps->parentClass.lock()) {
+          isLiteral = pc->isLiteral;
+        }
       }
     }
     itemName = isLiteral ? var->name : escapeName(var->name);
@@ -1329,7 +1331,10 @@ void Talta::CTranspiler::destroyGeneratorScope(std::shared_ptr<AltaCore::DET::Sc
       source.insertExpressionStatement(
         source.createAssignment(
           source.createAccessor(
-            source.createDereference(source.createFetch("_Alta_coroutine")),
+            source.createAccessor(
+              source.createDereference(source.createFetch("_Alta_coroutine")),
+              "generator"
+            ),
             "index"
           ),
           source.createFetch("SIZE_MAX")
@@ -1338,7 +1343,10 @@ void Talta::CTranspiler::destroyGeneratorScope(std::shared_ptr<AltaCore::DET::Sc
       source.insertExpressionStatement(
         source.createAssignment(
           source.createAccessor(
-            source.createDereference(source.createFetch("_Alta_coroutine")),
+            source.createAccessor(
+              source.createDereference(source.createFetch("_Alta_coroutine")),
+              "generator"
+            ),
             "done"
           ),
           source.createFetch("_Alta_bool_true")
@@ -1923,7 +1931,7 @@ std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::cast(std::shared_pt
   };
   auto canCopy = [&](std::shared_ptr<DET::Type> type = nullptr) {
     if (!type) type = currentType;
-    return (!type->isNative || !type->isRawFunction) && type->indirectionLevel() < 1;
+    return (!type->isNative || !type->isRawFunction) && type->indirectionLevel() < 1 && (!type->klass || type->klass->copyConstructor);
   };
   for (size_t i = 0; i < path.size(); i++) {
     using CCT = AltaCore::DET::CastComponentType;
@@ -2519,10 +2527,13 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
         auto& genClass = info->function->isGenerator ? info->generator : info->coroutine;
         auto nextFunc = std::dynamic_pointer_cast<DET::Function>(genClass->scope->items[info->function->isGenerator ? 1 : 2]);
         source.insertFunctionDeclaration(genPrefix + mangledFuncName, {
-          std::make_tuple("_Alta_generator", source.createType(info->function->isAsync ? "_Alta_basic_coroutine_state" : "_Alta_basic_generator_state", { { CAST::TypeModifierFlag::Pointer } })),
+          std::make_tuple(info->function->isAsync ? "_Alta_coroutine" : "_Alta_generator", source.createType(info->function->isAsync ? "_Alta_basic_coroutine_state" : "_Alta_basic_generator_state", { { CAST::TypeModifierFlag::Pointer } })),
         }, returnType);
         source.insertFunctionDefinition(mangledFuncName, cParams, source.createType(mangleName(genClass.get())));
-        source.insertVariableDefinition(source.createType(mangleName(genClass.get())), "_Alta_generator", source.createArrayLiteral({ source.createIntegerLiteral(0) }));
+        source.insertVariableDefinition(source.createType(mangleName(genClass.get())), info->function->isAsync ? "_Alta_coroutine" : "_Alta_generator", source.createArrayLiteral({ source.createIntegerLiteral(0) }));
+        if (info->function->isAsync) {
+          source.insertVariableDefinition(source.createType("_Alta_basic_generator_state"), "_Alta_generator", source.createArrayLiteral({ source.createIntegerLiteral(0) }));
+        }
         CExpression sizes = source.createIntegerLiteral(0);
         for (auto& var: info->function->parameterVariables) {
           sizes = source.createBinaryOperation(
@@ -2578,32 +2589,32 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
           )
         );
         if (info->function->isMethod) {
-        source.insertExpressionStatement(
-          source.createAssignment(
-            source.createAccessor((source.createFetch("_Alta_generator")), "self"),
-            info->function->isMethod
-              ?
-                std::dynamic_pointer_cast<CAST::Expression>(
-                  source.createCast(
-                    source.createFetch("_Alta_self"),
-                    source.createType("_Alta_basic_class", { { CAST::TypeModifierFlag::Pointer } } )
+          source.insertExpressionStatement(
+            source.createAssignment(
+              source.createAccessor((source.createFetch("_Alta_generator")), "self"),
+              info->function->isMethod
+                ?
+                  std::dynamic_pointer_cast<CAST::Expression>(
+                    source.createCast(
+                      source.createFetch("_Alta_self"),
+                      source.createType("_Alta_basic_class", { { CAST::TypeModifierFlag::Pointer } } )
+                    )
                   )
-                )
-              :
-                source.createFetch("NULL")
-          )
-        );
+                :
+                  source.createFetch("NULL")
+            )
+          );
         }
         if (info->function->isAsync) {
           source.insertExpressionStatement(
             source.createAssignment(
-              source.createAccessor((source.createFetch("_Alta_generator")), "waitingFor"),
+              source.createAccessor((source.createFetch("_Alta_coroutine")), "waitingFor"),
               source.createFetch("NULL")
             )
           );
           source.insertExpressionStatement(
             source.createAssignment(
-              source.createAccessor((source.createFetch("_Alta_generator")), "next"),
+              source.createAccessor((source.createFetch("_Alta_coroutine")), "next"),
               source.createFetch(genPrefix + mangledFuncName)
             )
           );
@@ -2636,7 +2647,18 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
             )
           );
         }
-        source.insertReturnDirective(source.createFetch("_Alta_generator"));
+        if (info->function->isAsync) {
+          source.insertExpressionStatement(
+            source.createAssignment(
+              source.createAccessor(
+                source.createFetch("_Alta_coroutine"),
+                "generator"
+              ),
+              source.createFetch("_Alta_generator")
+            )
+          );
+        }
+        source.insertReturnDirective(source.createFetch(info->function->isAsync ? "_Alta_coroutine" : "_Alta_generator"));
         source.exitInsertionPoint();
 
         source.insertFunctionDefinition(mangleName(nextFunc.get()), {
@@ -2925,9 +2947,11 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
           source.insertVariableDefinition(
             source.createType("_Alta_basic_generator_state", { { CAST::TypeModifierFlag::Pointer } }),
             "_Alta_generator",
-            source.createCast(
-              source.createFetch("_Alta_coroutine"),
-              source.createType("_Alta_basic_generator_state", { { CAST::TypeModifierFlag::Pointer } })
+            source.createPointer(
+              source.createAccessor(
+                source.createDereference(source.createFetch("_Alta_coroutine")),
+                "generator"
+              )
             )
           );
         }
@@ -3126,22 +3150,21 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
 
           // class definition
           headerPredeclaration(headerMangle(genClass.get()), mangledModName);
-          decltype(CAST::StructureDefinition::members) members = {
-            {"stack", header.createType("void", { { CAST::TypeModifierFlag::Pointer } })},
-            {"stackSize", header.createType("size_t")},
-            {"input", header.createType("void", { { CAST::TypeModifierFlag::Pointer } })},
-            {"index", header.createType("size_t")},
-            {mangleName(doneVar.get()), header.createType("_Alta_bool")},
-            {"parameters", header.createType("void", { { CAST::TypeModifierFlag::Pointer } })},
-            {"self", header.createType("_Alta_basic_class", { { CAST::TypeModifierFlag::Pointer } })},
-          };
-          if (info->function->isAsync) {
-            members.push_back(std::make_pair("value", header.createType("void", { { CAST::TypeModifierFlag::Pointer } })));
-            members.push_back(std::make_pair("waitingFor", header.createType("_Alta_basic_coroutine_state", { { CAST::TypeModifierFlag::Pointer } })));
-            members.push_back(std::make_pair("next", header.createType("_Alta_basic_coroutine_runner")));
+          if (info->function->isGenerator) {
+            decltype(CAST::StructureDefinition::members) members = {
+              {"stack", header.createType("void", { { CAST::TypeModifierFlag::Pointer } })},
+              {"stackSize", header.createType("size_t")},
+              {"input", header.createType("void", { { CAST::TypeModifierFlag::Pointer } })},
+              {"index", header.createType("size_t")},
+              {mangleName(doneVar.get()), header.createType("_Alta_bool")},
+              {"parameters", header.createType("void", { { CAST::TypeModifierFlag::Pointer } })},
+              {"self", header.createType("_Alta_basic_class", { { CAST::TypeModifierFlag::Pointer } })},
+            };
+            header.insertStructureDefinition("_s_" + mangledGenName, members);
+            header.insertTypeDefinition(mangledGenName, header.createType("_s_" + mangledGenName, {}, true));
+          } else if (info->function->isAsync) {
+            header.insertTypeDefinition(mangledGenName, header.createType("_Alta_basic_coroutine_state"));
           }
-          header.insertStructureDefinition("_s_" + mangledGenName, members);
-          header.insertTypeDefinition(mangledGenName, header.createType("_s_" + mangledGenName, {}, true));
           header.exitInsertionPoint();
 
           // `next` function declaration
@@ -3478,7 +3501,10 @@ auto Talta::CTranspiler::transpileReturnDirectiveNode(Coroutine& co) -> Coroutin
       source.insertExpressionStatement(
         source.createAssignment(
           source.createAccessor(
-            source.createDereference(source.createFetch("_Alta_coroutine")),
+            source.createAccessor(
+              source.createDereference(source.createFetch("_Alta_coroutine")),
+              "generator"
+            ),
             "index"
           ),
           source.createFetch("SIZE_MAX")
@@ -3487,7 +3513,10 @@ auto Talta::CTranspiler::transpileReturnDirectiveNode(Coroutine& co) -> Coroutin
       source.insertExpressionStatement(
         source.createAssignment(
           source.createAccessor(
-            source.createDereference(source.createFetch("_Alta_coroutine")),
+            source.createAccessor(
+              source.createDereference(source.createFetch("_Alta_coroutine")),
+              "generator"
+            ),
             "done"
           ),
           source.createFetch("_Alta_bool_true")
@@ -4038,7 +4067,7 @@ auto Talta::CTranspiler::transpileAssignmentExpression(Coroutine& co) -> Corouti
     auto tgtType = info->targetType;
     auto origTgtType = tgtType;
     bool isNullopt = tgtType->isOptional && tgtType->pointerLevel() < 1 && assign->value->nodeType() == ANT::NullptrExpression;
-    bool canCopy = !isNullopt && (!tgtType->isNative || !tgtType->isRawFunction) && tgtType->pointerLevel() < 1 && (!info->strict || tgtType->indirectionLevel() < 1);
+    bool canCopy = !isNullopt && (!tgtType->isNative || !tgtType->isRawFunction) && tgtType->pointerLevel() < 1 && (!info->strict || tgtType->indirectionLevel() < 1) && (!tgtType->klass || tgtType->klass->copyConstructor);
     bool canDestroyVar = !info->operatorMethod && !info->strict && canDestroy(tgtType);
 
     std::vector<CExpression> exprs;
@@ -4353,7 +4382,14 @@ auto Talta::CTranspiler::transpileFunctionCallExpression(Coroutine& co) -> Corou
     } else if (!info->targetType->isRawFunction) {
       args.push_back(co.result<CExpression>());
     }
-    auto restArgs = processArgs(info->adjustedArguments, info->targetType->parameters, &call->position);
+    std::vector<CExpression> restArgs;
+    if (info->isSpecialScheduleMethod) {
+      restArgs = processArgs(info->adjustedArguments, std::vector<std::tuple<std::string, std::shared_ptr<DET::Type>, bool, std::string>> {
+        std::make_tuple<std::string, std::shared_ptr<DET::Type>, bool, std::string>("", DET::Type::getUnderlyingType(info->arguments[0].get()), false, ""),
+      }, &call->position);
+    } else {
+      restArgs = processArgs(info->adjustedArguments, info->targetType->parameters, &call->position);
+    }
     args.insert(args.end(), restArgs.begin(), restArgs.end());
     std::string tmpName;
     CExpression result = nullptr;
@@ -9548,7 +9584,7 @@ auto Talta::CTranspiler::transpileAwaitExpression(Coroutine& co) -> Coroutine& {
   } else {
     CExpression expr = co.result<CExpression>();
     auto tgtType = DET::Type::getUnderlyingType(info->target.get());
-    auto coroValueFunc = std::dynamic_pointer_cast<DET::Function>(tgtType->klass->scope->findAll("value", {}, false, info->inputScope)[0]);
+    auto coroValueFunc = std::dynamic_pointer_cast<DET::Function>(tgtType->klass->scope->findAll("value", {}, false)[0]);
     auto coroReturnType = coroValueFunc->returnType->optionalTarget;
 
     if (additionalCopyInfo(await->target, info->target).second) {
@@ -9556,7 +9592,7 @@ auto Talta::CTranspiler::transpileAwaitExpression(Coroutine& co) -> Coroutine& {
     }
 
     auto mod = AltaCore::Util::getModule(info->inputScope.get()).lock();
-    auto scheduleFunc = std::dynamic_pointer_cast<DET::Function>(mod->internal.schedulerClass->scope->findAll("schedule")[0]);
+    auto scheduleFunc = std::dynamic_pointer_cast<DET::Function>(mod->internal.schedulerClass->scope->findAll("_schedule")[0]);
     auto glob = popToGlobal();
     hoist(scheduleFunc);
     pushFromGlobal(glob);
@@ -9597,7 +9633,10 @@ auto Talta::CTranspiler::transpileAwaitExpression(Coroutine& co) -> Coroutine& {
     source.insertExpressionStatement(
       source.createAssignment(
         source.createAccessor(
-          source.createDereference(source.createFetch("_Alta_coroutine")),
+          source.createAccessor(
+            source.createDereference(source.createFetch("_Alta_coroutine")),
+            "generator"
+          ),
           "index"
         ),
         source.createIntegerLiteral(generatorScopeCount)
