@@ -8845,6 +8845,8 @@ auto Talta::CTranspiler::transpileSpecialFetchExpression(Coroutine& co) -> Corou
   auto fetch = std::dynamic_pointer_cast<AAST::SpecialFetchExpression>(node);
   auto info = std::dynamic_pointer_cast<DH::SpecialFetchExpression>(_info);
 
+  auto mod = AltaCore::Util::getModule(info->inputScope.get()).lock();
+
   if (invalidValueExpressionTable.find(info->id) != invalidValueExpressionTable.end()) {
     auto& type = invalidValueExpressionTable[info->id];
     CExpression expr = nullptr;
@@ -8897,6 +8899,13 @@ auto Talta::CTranspiler::transpileSpecialFetchExpression(Coroutine& co) -> Corou
       throw std::runtime_error("can't create invalid value for type");
     }
     return co.finalYield(expr);
+  } else if (info->items.size() == 1 && info->items.front()->id == mod->internal.schedulerVariable->id) {
+    return co.finalYield<CExpression>(
+      source.createAccessor(
+        source.createFetch("_Alta_global_runtime"),
+        "scheduler"
+      )
+    );
   } else {
     CExpression expr = source.createFetch(mangleName(info->items[0].get()));
 
@@ -9543,18 +9552,20 @@ auto Talta::CTranspiler::transpileAwaitExpression(Coroutine& co) -> Coroutine& {
     auto coroReturnType = coroValueFunc->returnType->optionalTarget;
 
     if (additionalCopyInfo(await->target, info->target).second) {
-      auto multi = std::dynamic_pointer_cast<CAST::MultiExpression>(tmpify(expr, tgtType));
-      source.insertExpressionStatement(multi->expressions.front());
-      expr = multi->expressions.back();
+      expr = tmpify(expr, tgtType);
     }
 
-    // TODO: when we start passing stuff to the scheduler, we need to tmpify the pointer it gives back to us
-    //       so we don't have to insert the same expression multiple times (possibly with side effects)
-    //
-    //       remember to create the temporary variable BEFORE calling the scheduling function, because creating
-    //       a variable in a generator/coroutine requires a reallocation of the stack and invalidates
-    //       all previous stack variables
-    //
+    auto mod = AltaCore::Util::getModule(info->inputScope.get()).lock();
+    auto scheduleFunc = std::dynamic_pointer_cast<DET::Function>(mod->internal.schedulerClass->scope->findAll("schedule")[0]);
+    auto glob = popToGlobal();
+    hoist(scheduleFunc);
+    pushFromGlobal(glob);
+    //mod->dependencies.push_back(mod->internal.coroutinesModule);
+    //mod->internal.coroutinesModule->dependents.push_back(mod);
+
+    std::string tmpName = mangleName(currentScope.get()) + "_temp_var_" + std::to_string(tempVarIDs[currentScope->id]++);
+    pushGeneratorVariable(tmpName, scheduleFunc->returnType, false);
+
     // POSSIBLE TODO: maybe we should determine the maximum stack size for each generator/coroutine at compilation time,
     //                allocate that at runtime, and free it when we're done
     //                the current approach was chosen to save memory so that we only allocate what we need
@@ -9564,6 +9575,24 @@ auto Talta::CTranspiler::transpileAwaitExpression(Coroutine& co) -> Coroutine& {
     //                and this would still save more memory than allocating for ALL scopes at once (and would require
     //                less contiguous memory), because if we don't reach a scope, we don't allocate for it
     //                yeah, this is actually a great idea; i'm going to implement soon after i have basic working `await`
+
+    source.insertExpressionStatement(
+      source.createAssignment(
+        source.createDereference(source.createFetch(tmpName)),
+        source.createFunctionCall(
+          source.createFetch(mangleName(scheduleFunc.get())),
+          {
+            source.createPointer(
+              source.createAccessor(
+                source.createFetch("_Alta_global_runtime"),
+                "scheduler"
+              )
+            ),
+            source.createPointer(expr),
+          }
+        )
+      )
+    );
 
     source.insertExpressionStatement(
       source.createAssignment(
@@ -9580,11 +9609,9 @@ auto Talta::CTranspiler::transpileAwaitExpression(Coroutine& co) -> Coroutine& {
           source.createDereference(source.createFetch("_Alta_coroutine")),
           "waitingFor"
         ),
-        source.createPointer(expr)
+        source.createDereference(source.createFetch(tmpName))
       )
     );
-
-    // TODO: pass `expr` to the scheduler
 
     source.insertReturnDirective();
     toFunctionRoot();
@@ -9604,7 +9631,7 @@ auto Talta::CTranspiler::transpileAwaitExpression(Coroutine& co) -> Coroutine& {
         source.createDereference(
           source.createCast(
             source.createAccessor(
-              expr,
+              source.createDereference(source.createDereference(source.createFetch(tmpName))),
               "value"
             ),
             transpileType(coroReturnType->point().get())
