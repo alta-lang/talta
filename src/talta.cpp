@@ -9593,90 +9593,146 @@ auto Talta::CTranspiler::transpileAwaitExpression(Coroutine& co) -> Coroutine& {
 
     auto mod = AltaCore::Util::getModule(info->inputScope.get()).lock();
     auto scheduleFunc = std::dynamic_pointer_cast<DET::Function>(mod->internal.schedulerClass->scope->findAll("_schedule")[0]);
-    auto glob = popToGlobal();
-    hoist(scheduleFunc);
-    pushFromGlobal(glob);
-    //mod->dependencies.push_back(mod->internal.coroutinesModule);
-    //mod->internal.coroutinesModule->dependents.push_back(mod);
+    auto runFunc = std::dynamic_pointer_cast<DET::Function>(mod->internal.schedulerClass->scope->findAll("runToCompletion")[0]);
 
     std::string tmpName = mangleName(currentScope.get()) + "_temp_var_" + std::to_string(tempVarIDs[currentScope->id]++);
-    pushGeneratorVariable(tmpName, scheduleFunc->returnType, false);
 
-    // POSSIBLE TODO: maybe we should determine the maximum stack size for each generator/coroutine at compilation time,
-    //                allocate that at runtime, and free it when we're done
-    //                the current approach was chosen to save memory so that we only allocate what we need
-    //
-    //                we could maybe take a hybrid approach where we allocate each scope's stack separately,
-    //                since, once we enter a scope, we're guaranteed to use all the variables allocated in it,
-    //                and this would still save more memory than allocating for ALL scopes at once (and would require
-    //                less contiguous memory), because if we don't reach a scope, we don't allocate for it
-    //                yeah, this is actually a great idea; i'm going to implement soon after i have basic working `await`
+    if (info->coroutine && info->coroutine->isAsync) {
+      auto glob = popToGlobal();
+      hoist(scheduleFunc);
+      pushFromGlobal(glob);
 
-    source.insertExpressionStatement(
-      source.createAssignment(
-        source.createDereference(source.createFetch(tmpName)),
-        source.createFunctionCall(
-          source.createFetch(mangleName(scheduleFunc.get())),
-          {
-            source.createPointer(
-              source.createAccessor(
-                source.createFetch("_Alta_global_runtime"),
-                "scheduler"
-              )
-            ),
-            source.createPointer(expr),
-          }
-        )
-      )
-    );
+      pushGeneratorVariable(tmpName, scheduleFunc->returnType, false);
 
-    source.insertExpressionStatement(
-      source.createAssignment(
-        source.createAccessor(
-          source.createAccessor(
-            source.createDereference(source.createFetch("_Alta_coroutine")),
-            "generator"
-          ),
-          "index"
-        ),
-        source.createIntegerLiteral(generatorScopeCount)
-      )
-    );
-    source.insertExpressionStatement(
-      source.createAssignment(
-        source.createAccessor(
-          source.createDereference(source.createFetch("_Alta_coroutine")),
-          "waitingFor"
-        ),
-        source.createDereference(source.createFetch(tmpName))
-      )
-    );
+      // POSSIBLE TODO: maybe we should determine the maximum stack size for each generator/coroutine at compilation time,
+      //                allocate that at runtime, and free it when we're done
+      //                the current approach was chosen to save memory so that we only allocate what we need
+      //
+      //                we could maybe take a hybrid approach where we allocate each scope's stack separately,
+      //                since, once we enter a scope, we're guaranteed to use all the variables allocated in it,
+      //                and this would still save more memory than allocating for ALL scopes at once (and would require
+      //                less contiguous memory), because if we don't reach a scope, we don't allocate for it
+      //                yeah, this is actually a great idea; i'm going to implement soon after i have basic working `await`
 
-    source.insertReturnDirective();
-    toFunctionRoot();
-    source.insertLabel('_' + std::to_string(generatorScopeCount++));
-    source.insertBlock();
-    loadGenerator();
-
-    if (*coroReturnType == DET::Type(DET::NativeType::Void)) {
-      return co.finalYield<CExpression>(
-        source.createCast(
-          source.createIntegerLiteral(0),
-          source.createType("void")
-        )
-      );
-    } else {
-      return co.finalYield<CExpression>(
-        source.createDereference(
-          source.createCast(
-            source.createAccessor(
-              source.createDereference(source.createDereference(source.createFetch(tmpName))),
-              "value"
-            ),
-            transpileType(coroReturnType->point().get())
+      source.insertExpressionStatement(
+        source.createAssignment(
+          source.createDereference(source.createFetch(tmpName)),
+          source.createFunctionCall(
+            source.createFetch(mangleName(scheduleFunc.get())),
+            {
+              source.createPointer(
+                source.createAccessor(
+                  source.createFetch("_Alta_global_runtime"),
+                  "scheduler"
+                )
+              ),
+              source.createPointer(expr),
+            }
           )
         )
       );
+
+      source.insertExpressionStatement(
+        source.createAssignment(
+          source.createAccessor(
+            source.createAccessor(
+              source.createDereference(source.createFetch("_Alta_coroutine")),
+              "generator"
+            ),
+            "index"
+          ),
+          source.createIntegerLiteral(generatorScopeCount)
+        )
+      );
+      source.insertExpressionStatement(
+        source.createAssignment(
+          source.createAccessor(
+            source.createDereference(source.createFetch("_Alta_coroutine")),
+            "waitingFor"
+          ),
+          source.createDereference(source.createFetch(tmpName))
+        )
+      );
+
+      source.insertReturnDirective();
+      toFunctionRoot();
+      source.insertLabel('_' + std::to_string(generatorScopeCount++));
+      source.insertBlock();
+      loadGenerator();
+
+      if (*coroReturnType == DET::Type(DET::NativeType::Void)) {
+        return co.finalYield<CExpression>(
+          source.createCast(
+            source.createIntegerLiteral(0),
+            source.createType("void")
+          )
+        );
+      } else {
+        return co.finalYield<CExpression>(
+          source.createDereference(
+            source.createCast(
+              source.createAccessor(
+                source.createDereference(source.createDereference(source.createFetch(tmpName))),
+                "value"
+              ),
+              transpileType(coroReturnType->point().get())
+            )
+          )
+        );
+      }
+    } else {
+      auto glob = popToGlobal();
+      hoist(runFunc);
+      pushFromGlobal(glob);
+
+      CExpression call = source.createFunctionCall(
+        source.createFetch(mangleName(runFunc.get())),
+        {
+          source.createPointer(
+            source.createAccessor(
+              source.createFetch("_Alta_global_runtime"),
+              "scheduler"
+            )
+          ),
+          source.createPointer(expr),
+        }
+      );
+      if (*coroReturnType == DET::Type(DET::NativeType::Void)) {
+        return co.finalYield<CExpression>(
+          source.createMultiExpression({
+            call,
+            source.createCast(
+              source.createIntegerLiteral(0),
+              source.createType("void")
+            ),
+          })
+        );
+      } else {
+        std::string tmpName2 = mangleName(currentScope.get()) + "_temp_var_" + std::to_string(tempVarIDs[currentScope->id]++);
+        source.insertVariableDefinition(transpileType(runFunc->returnType.get()), tmpName, expr);
+        source.insertVariableDefinition(transpileType(coroReturnType.get()), tmpName2, expr);
+        return co.finalYield<CExpression>(
+          source.createMultiExpression({
+            source.createAssignment(
+              source.createFetch(tmpName),
+              call
+            ),
+            source.createAssignment(
+              source.createFetch(tmpName2),
+              source.createDereference(
+                source.createCast(
+                  source.createAccessor(
+                    source.createDereference(source.createFetch(tmpName)),
+                    "value"
+                  ),
+                  transpileType(coroReturnType->point().get())
+                )
+              )
+            ),
+            source.createFetch(tmpName2),
+          })
+        );
+      }
     }
   }
 };
