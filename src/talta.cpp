@@ -8942,6 +8942,8 @@ auto Talta::CTranspiler::transpileSpecialFetchExpression(Coroutine& co) -> Corou
         "scheduler"
       )
     );
+  } else if (info->items.size() == 1 && info->items.front()->name == "$coroutine") {
+    return co.finalYield<CExpression>(source.createDereference(source.createFetch("_Alta_coroutine")));
   } else {
     CExpression expr = source.createFetch(mangleName(info->items[0].get()));
 
@@ -9709,8 +9711,8 @@ auto Talta::CTranspiler::transpileAwaitExpression(Coroutine& co) -> Coroutine& {
         );
       } else {
         std::string tmpName2 = mangleName(currentScope.get()) + "_temp_var_" + std::to_string(tempVarIDs[currentScope->id]++);
-        source.insertVariableDefinition(transpileType(runFunc->returnType.get()), tmpName, expr);
-        source.insertVariableDefinition(transpileType(coroReturnType.get()), tmpName2, expr);
+        source.insertVariableDefinition(transpileType(runFunc->returnType.get()), tmpName);
+        source.insertVariableDefinition(transpileType(coroReturnType.get()), tmpName2);
         return co.finalYield<CExpression>(
           source.createMultiExpression({
             source.createAssignment(
