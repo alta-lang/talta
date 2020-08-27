@@ -1732,7 +1732,7 @@ auto Talta::CTranspiler::tmpify(Coroutine& co) -> Coroutine& {
       auto id = tempVarIDs[currentScope->id]++;
       auto tmpName = mangleName(currentScope.get()) + "_temp_var_" + std::to_string(id);
       if (inGenerator) {
-        pushGeneratorVariable(tmpName, type, source.createArrayLiteral({ source.createIntegerLiteral(0) }), !currentScope->noRuntime && canPush(type));
+        pushGeneratorVariable(tmpName, type, source.createArrayLiteral({ source.createIntegerLiteral(0) }, transpileType(type.get())), !currentScope->noRuntime && canPush(type));
       } else {
         source.insertVariableDefinition(transpileType(type.get()), tmpName, source.createArrayLiteral({ source.createIntegerLiteral(0) }));
       }
@@ -3664,7 +3664,7 @@ auto Talta::CTranspiler::transpileVariableDefinitionExpression(Coroutine& co) ->
     } else if (info->type->type->pointerLevel() > 0) {
       init = source.createFetch("NULL");
     } else if (info->type->type->isNative || (info->type->type->klass && info->type->type->klass->isStructure)) {
-      init = source.createArrayLiteral({ source.createIntegerLiteral(0) });
+      init = source.createArrayLiteral({ source.createIntegerLiteral(0) }, transpileType(info->type->type.get()));
     } else if (info->type->type->isOptional) {
       init = source.createFunctionCall(source.createFetch("_Alta_make_empty_" + cTypeNameify(info->type->type.get())), {});
     } else if (!inModuleRoot && !info->type->type->isUnion()) {
