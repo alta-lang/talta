@@ -312,7 +312,7 @@ namespace Talta {
       CExpression doDtor(CExpression expr, std::shared_ptr<AltaCore::DET::Type> exprType, bool* didDtor = nullptr);
       inline bool canDestroy(std::shared_ptr<AltaCore::DET::Type> exprType) const {
         return (
-          exprType->pointerLevel() < 1 &&
+          exprType->indirectionLevel() < 1 &&
           (
             (
               !exprType->isNative &&

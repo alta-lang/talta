@@ -4005,6 +4005,14 @@ auto Talta::CTranspiler::transpileAccessor(Coroutine& co) -> Coroutine& {
     for (size_t i = 0; i < refLevel; i++) {
       result = source.createDereference(result);
     }
+    if (info->isRootClassRetrieval) {
+      if (refLevel > 0) {
+        result = source.createPointer(result);
+      }
+      result = source.createFunctionCall(source.createFetch("_Alta_get_root_instance"), {
+        result,
+      });
+    }
     return co.finalYield(result);
   }
 };
@@ -4051,6 +4059,15 @@ auto Talta::CTranspiler::transpileFetch(Coroutine& co) -> Coroutine& {
 
   if (info->referencesOutsideLambda || info->referencesOutsideCaptureClass || info->referencesInsideGenerator) {
     cFetch = source.createDereference(cFetch);
+  }
+
+  if (info->isRootClassRetrieval) {
+    if (refLevel > 0) {
+      cFetch = source.createPointer(cFetch);
+    }
+    cFetch = source.createFunctionCall(source.createFetch("_Alta_get_root_instance"), {
+      cFetch,
+    });
   }
 
   return co.finalYield(cFetch);
@@ -7377,7 +7394,7 @@ auto Talta::CTranspiler::transpileRangedForLoopStatement(Coroutine& co) -> Corou
             source.createDereference(source.createFetch("_Alta_generator")),
             "index"
           ),
-          source.createIntegerLiteral(orig + 1)
+          source.createIntegerLiteral(info->end ? orig + 1 : orig)
         )
       );
       source.insertGoto('_' + std::to_string(info->end ? orig + 1 : orig));
