@@ -435,7 +435,9 @@ namespace Talta {
       ALTACORE_MAP<std::string, size_t> tempVarIDs;
 
       size_t generatorScopeCount = 0;
-      std::shared_ptr<AltaCore::DET::Scope> generatorScope = nullptr;
+      std::shared_ptr<AltaCore::DET::Scope> generatorScope() {
+        return (generatorScopeStack.size() == 0) ? nullptr : generatorScopeStack.back().scope;
+      };
 
       struct GeneratorVariable {
         std::string name;
@@ -453,9 +455,28 @@ namespace Talta {
           {};
       };
 
+      struct GeneratorScope {
+        std::shared_ptr<AltaCore::DET::Scope> scope = nullptr;
+        size_t referenceCount = 1;
+
+        GeneratorScope(std::shared_ptr<AltaCore::DET::Scope> _scope):
+          scope(_scope)
+          {};
+
+        void retain() {
+          ++referenceCount;
+        };
+
+        bool release() {
+          return (--referenceCount) == 0;
+        };
+      };
+
       bool inGenerator = false;
       std::vector<GeneratorVariable> generatorStack;
       std::stack<std::pair<size_t, size_t>> generatorLoopScopes;
+      std::stack<CExpression> generatorStackAllocations;
+      std::vector<GeneratorScope> generatorScopeStack;
 
       void loadGenerator(bool reload = false);
       void pushGeneratorVariable(std::string name, std::shared_ptr<AltaCore::DET::Type> type, bool destroy = true);
@@ -464,6 +485,7 @@ namespace Talta {
       void destroyGeneratorScope(std::shared_ptr<AltaCore::DET::Scope> scope);
       void popGeneratorScope(std::shared_ptr<AltaCore::DET::Scope> scope);
       void toFunctionRoot();
+      CExpression calculateGeneratorScopeStackSize(std::shared_ptr<AltaCore::DET::Scope> scope);
 
       std::shared_ptr<Ceetah::AST::Expression> fetchTemp(std::string tmpName) {
         if (inGenerator) {

@@ -1251,10 +1251,50 @@ void Talta::CTranspiler::stackBookkeepingStop(std::shared_ptr<AltaCore::DET::Sco
 };
 
 void Talta::CTranspiler::pushGeneratorScope(std::shared_ptr<AltaCore::DET::Scope> scope) {
-  generatorScope = scope;
+  for (auto rit = generatorScopeStack.rbegin(); rit != generatorScopeStack.rend(); ++rit) {
+    auto& genScope = *rit;
+    if (genScope.scope->id == scope->id) {
+      genScope.retain();
+      return;
+    }
+  }
+
+  auto funcCall = source.createFunctionCall(
+    source.createFetch("_Alta_generator_create_stack"),
+    {
+      source.createFetch("_Alta_generator"),
+      nullptr, // will be filled in later
+    }
+  );
+  funcCall->macro = true;
+  source.insertExpressionStatement(funcCall);
+
+  generatorStackAllocations.push(std::dynamic_pointer_cast<CAST::Expression>(funcCall));
+  generatorScopeStack.push_back(scope);
+};
+
+auto Talta::CTranspiler::calculateGeneratorScopeStackSize(std::shared_ptr<AltaCore::DET::Scope> scope) -> CExpression {
+  CExpression stackSizeExpr = source.createIntegerLiteral(0);
+
+  for (size_t i = generatorStack.size(); i > 0; --i) {
+    auto& var = generatorStack[i - 1];
+    if (var.scope->id == scope->id || var.scope->hasParent(scope)) {
+      stackSizeExpr = source.createBinaryOperation(
+        CAST::OperatorType::Addition,
+        stackSizeExpr,
+        source.createSizeof(transpileType(var.type.get()))
+      );
+    }
+  }
+
+  return stackSizeExpr;
 };
 
 void Talta::CTranspiler::destroyGeneratorScope(std::shared_ptr<AltaCore::DET::Scope> scope) {
+  if (generatorScopeStack.back().scope->id != scope->id) {
+    return;
+  }
+
   for (auto rit = generatorStack.rbegin(); rit != generatorStack.rend(); ++rit) {
     auto& var = *rit;
     if (var.destroy && (var.scope->id == scope->id || var.scope->hasParent(scope)) && canDestroy(var.type)) {
@@ -1312,20 +1352,16 @@ void Talta::CTranspiler::destroyGeneratorScope(std::shared_ptr<AltaCore::DET::Sc
       }
     }
   }
-  for (auto rit = generatorStack.rbegin(); rit != generatorStack.rend(); ++rit) {
-    auto& var = *rit;
-    if (var.onStack && (var.scope->id == scope->id || var.scope->hasParent(scope))) {
-      source.insertExpressionStatement(
-        source.createFunctionCall(
-          source.createFetch("_Alta_generator_pop"),
-          {
-            source.createFetch("_Alta_generator"),
-            source.createSizeof(transpileType(var.type.get())),
-          }
-        )
-      );
-    }
-  }
+
+  source.insertExpressionStatement(
+    source.createFunctionCall(
+      source.createFetch("_Alta_generator_release_stack"),
+      {
+        source.createFetch("_Alta_generator"),
+      }
+    )
+  );
+
   if (auto func = scope->parentFunction.lock()) {
     if (func->isAsync) {
       source.insertExpressionStatement(
@@ -1358,6 +1394,13 @@ void Talta::CTranspiler::destroyGeneratorScope(std::shared_ptr<AltaCore::DET::Sc
 };
 
 void Talta::CTranspiler::popGeneratorScope(std::shared_ptr<AltaCore::DET::Scope> scope) {
+  if (generatorScopeStack.back().scope->id != scope->id || !generatorScopeStack.back().release()) {
+    return;
+  }
+
+  CExpression stackSizeExpr = calculateGeneratorScopeStackSize(scope);
+  auto funcCall = std::dynamic_pointer_cast<CAST::FunctionCall>(generatorStackAllocations.top());
+
   destroyGeneratorScope(scope);
   for (size_t i = generatorStack.size(); i > 0; --i) {
     auto& var = generatorStack[i - 1];
@@ -1365,6 +1408,11 @@ void Talta::CTranspiler::popGeneratorScope(std::shared_ptr<AltaCore::DET::Scope>
       generatorStack.erase(generatorStack.begin() + (i - 1));
     }
   }
+
+  funcCall->arguments[1] = stackSizeExpr;
+
+  generatorStackAllocations.pop();
+  generatorScopeStack.pop_back();
 };
 
 std::shared_ptr<Ceetah::AST::Expression> Talta::CTranspiler::doCopyCtor(std::shared_ptr<Ceetah::AST::Expression> transpiled, std::shared_ptr<AltaCore::AST::ExpressionNode> expr, std::shared_ptr<AltaCore::DH::ExpressionNode> info, bool* didCopy) {
@@ -2340,40 +2388,50 @@ auto Talta::CTranspiler::doDtor(CExpression expr, std::shared_ptr<AltaCore::DET:
 };
 
 void Talta::CTranspiler::loadGenerator(bool reload) {
-  auto offsetTmp = mangleName(currentScope.get()) + "_temp_var_" + std::to_string(tempVarIDs[currentScope->id]++);
+  if (reload) {
+    // TODO: remove `reload` (this is a legacy parameter)
+    return;
+  }
+
+  std::vector<GeneratorScope> generatorScopeStackCopy = generatorScopeStack;
+
   source.insertVariableDefinition(
-    source.createType("char", { { CAST::TypeModifierFlag::Pointer } }),
-    offsetTmp,
-    source.createAccessor(
-      source.createDereference(source.createFetch("_Alta_generator")),
-      "stack"
+    source.createType("_Alta_generator_reload_context"),
+    "_Alta_reload_context",
+    source.createFunctionCall(
+      source.createFetch("_Alta_generator_reload"),
+      {
+        source.createFetch("_Alta_generator"),
+      }
     )
   );
-  for (auto& var: generatorStack) {
+
+  // iterate the stack backwards (that's how the runtime stores it)
+  for (auto rit = generatorStack.rbegin(); rit != generatorStack.rend(); ++rit) {
+    auto& var = *rit;
     if (!var.onStack) continue;
-    auto expr = source.createCast(
-      source.createFetch(offsetTmp),
-      transpileType(var.type->point().get())
-    );
-    if (reload) {
+
+    while (generatorScopeStackCopy.size() > 0 && generatorScopeStackCopy.back().scope->id != var.scope->id) {
       source.insertExpressionStatement(
-        source.createAssignment(
-          source.createFetch(var.name),
-          expr
+        source.createFunctionCall(
+          source.createFetch("_Alta_generator_reload_next_scope"),
+          {
+            source.createPointer(source.createFetch("_Alta_reload_context")),
+          }
         )
       );
-    } else {
-      source.insertVariableDefinition(
-        transpileType(var.type->point().get()),
-        var.name,
-        expr
-      );
+      generatorScopeStackCopy.pop_back();
     }
-    source.insertExpressionStatement(
-      source.createAssignment(
-        source.createFetch(offsetTmp),
-        source.createSizeof(transpileType(var.type.get())),
-        CAST::AssignmentType::Addition
+
+    source.insertVariableDefinition(
+      transpileType(var.type->point().get()),
+      var.name,
+      source.createFunctionCall(
+        source.createFetch("_Alta_generator_reload_next"),
+        {
+          source.createPointer(source.createFetch("_Alta_reload_context")),
+          source.createSizeof(transpileType(var.type.get())),
+        }
       )
     );
   }
@@ -2395,7 +2453,7 @@ void Talta::CTranspiler::pushGeneratorVariable(std::string name, std::shared_ptr
     )
   );
   loadGenerator(true);
-  generatorStack.emplace_back(generatorScope, name, type, destroy);
+  generatorStack.emplace_back(generatorScope(), name, type, destroy);
 };
 
 void Talta::CTranspiler::pushGeneratorVariable(std::string name, std::shared_ptr<AltaCore::DET::Type> type, std::shared_ptr<Ceetah::AST::Expression> init, bool destroy) {
@@ -2556,18 +2614,7 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
         source.insertExpressionStatement(
           source.createAssignment(
             source.createAccessor((source.createFetch("_Alta_generator")), "stack"),
-            source.createFunctionCall(
-              source.createFetch("malloc"),
-              {
-                source.createIntegerLiteral(0),
-              }
-            )
-          )
-        );
-        source.insertExpressionStatement(
-          source.createAssignment(
-            source.createAccessor((source.createFetch("_Alta_generator")), "stackSize"),
-            source.createIntegerLiteral(0)
+            source.createFetch("NULL")
           )
         );
         source.insertExpressionStatement(
@@ -2889,13 +2936,13 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
           }
         }
       } else {
-        pushGeneratorScope(info->function->scope);
-
         inGenerator = true;
         auto scopeLabel = generatorScopeCount++;
 
         source.insertLabel('_' + std::to_string(scopeLabel));
         source.insertBlock();
+
+        pushGeneratorScope(info->function->scope);
 
         for (size_t i = 0; i < info->function->parameterVariables.size(); i++) {
           auto& var = info->function->parameterVariables[i];
@@ -2903,7 +2950,7 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
             !currentScope->noRuntime &&
             canPush(var->isVariable ? var->type->follow() : var->type)
           ) {
-            GeneratorVariable genVar = GeneratorVariable(generatorScope, mangleName(var.get()), var->type, true);
+            GeneratorVariable genVar = GeneratorVariable(generatorScope(), mangleName(var.get()), var->type, true);
             if (var->isVariable) {
               genVar.variable = true;
             }
@@ -3039,15 +3086,6 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
               source.createFetch("NULL")
             )
           );
-          source.insertExpressionStatement(
-            source.createAssignment(
-              source.createAccessor(
-                source.createDereference(source.createFetch("_Alta_generator")),
-                "stackSize"
-              ),
-              source.createIntegerLiteral(0)
-            )
-          );
 
           // free the parameters
           source.insertExpressionStatement(
@@ -3084,7 +3122,6 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
         }
         source.exitInsertionPoint();
         inGenerator = false;
-        generatorScope = nullptr;
         generatorScopeCount = 0;
         generatorStack.clear();
       } else {
@@ -3152,8 +3189,7 @@ auto Talta::CTranspiler::transpileFunctionDefinitionNode(Coroutine& co) -> Corou
           headerPredeclaration(headerMangle(genClass.get()), mangledModName);
           if (info->function->isGenerator) {
             decltype(CAST::StructureDefinition::members) members = {
-              {"stack", header.createType("void", { { CAST::TypeModifierFlag::Pointer } })},
-              {"stackSize", header.createType("size_t")},
+              {"stack", header.createType("_Alta_floating_stack", { { CAST::TypeModifierFlag::Pointer } })},
               {"input", header.createType("void", { { CAST::TypeModifierFlag::Pointer } })},
               {"index", header.createType("size_t")},
               {mangleName(doneVar.get()), header.createType("_Alta_bool")},
@@ -3464,15 +3500,6 @@ auto Talta::CTranspiler::transpileReturnDirectiveNode(Coroutine& co) -> Coroutin
           source.createFetch("NULL")
         )
       );
-      source.insertExpressionStatement(
-        source.createAssignment(
-          source.createAccessor(
-            source.createDereference(source.createFetch("_Alta_generator")),
-            "stackSize"
-          ),
-          source.createIntegerLiteral(0)
-        )
-      );
 
       // free the parameters
       source.insertExpressionStatement(
@@ -3604,12 +3631,12 @@ auto Talta::CTranspiler::transpileBlockNode(Coroutine& co) -> Coroutine& {
   auto info = std::dynamic_pointer_cast<DH::BlockNode>(_info);
   if (inGenerator) {
     if (co.iteration() == 0) {
-      pushGeneratorScope(info->inputScope);
       source.insertGoto('_' + std::to_string(generatorScopeCount));
       toFunctionRoot();
       source.insertLabel('_' + std::to_string(generatorScopeCount++));
       source.insertBlock();
       loadGenerator();
+      pushGeneratorScope(info->inputScope);
       return co.yield();
     } else if (co.iteration() <= block->statements.size()) {
       auto i = co.iteration() - 1;
@@ -4006,12 +4033,17 @@ auto Talta::CTranspiler::transpileAccessor(Coroutine& co) -> Coroutine& {
       result = source.createDereference(result);
     }
     if (info->isRootClassRetrieval) {
-      if (refLevel > 0) {
-        result = source.createPointer(result);
+      info->isRootClassRetrieval = false;
+      auto realType = DET::Type::getUnderlyingType(info.get());
+      info->isRootClassRetrieval = true;
+      if (realType->klass) {
+        if (refLevel > 0) {
+          result = source.createPointer(result);
+        }
+        result = source.createFunctionCall(source.createFetch("_Alta_get_root_instance"), {
+          result,
+        });
       }
-      result = source.createFunctionCall(source.createFetch("_Alta_get_root_instance"), {
-        result,
-      });
     }
     return co.finalYield(result);
   }
@@ -4062,12 +4094,17 @@ auto Talta::CTranspiler::transpileFetch(Coroutine& co) -> Coroutine& {
   }
 
   if (info->isRootClassRetrieval) {
-    if (refLevel > 0) {
-      cFetch = source.createPointer(cFetch);
+    info->isRootClassRetrieval = false;
+    auto realType = DET::Type::getUnderlyingType(info.get());
+    info->isRootClassRetrieval = true;
+    if (realType->klass) {
+      if (refLevel > 0) {
+        cFetch = source.createPointer(cFetch);
+      }
+      cFetch = source.createFunctionCall(source.createFetch("_Alta_get_root_instance"), {
+        cFetch,
+      });
     }
-    cFetch = source.createFunctionCall(source.createFetch("_Alta_get_root_instance"), {
-      cFetch,
-    });
   }
 
   return co.finalYield(cFetch);
@@ -4598,8 +4635,8 @@ auto Talta::CTranspiler::transpileConditionalStatement(Coroutine& co) -> Corouti
       toFunctionRoot();
       source.insertLabel('_' + std::to_string(generatorScopeCount));
       source.insertBlock();
-      pushGeneratorScope(info->primaryScope);
       loadGenerator();
+      pushGeneratorScope(info->primaryScope);
       auto tmp = generatorScopeCount;
       generatorScopeCount += 3;
       generatorScopeCount += cond->alternatives.size() * 2;
@@ -6756,7 +6793,7 @@ auto Talta::CTranspiler::transpileWhileLoopStatement(Coroutine& co) -> Coroutine
       source.insertLabel('_' + std::to_string(generatorScopeCount));
       source.insertBlock();
       loadGenerator();
-      generatorScopeCount += 3;
+      generatorScopeCount += 4;
       pushGeneratorScope(info->scope);
       return co.await(boundTranspile, loop->test, info->test);
     } else if (co.iteration() == 1) {
@@ -6768,16 +6805,17 @@ auto Talta::CTranspiler::transpileWhileLoopStatement(Coroutine& co) -> Coroutine
         )
       );
       source.insertBlock();
+      destroyGeneratorScope(info->scope);
       source.insertExpressionStatement(
         source.createAssignment(
           source.createAccessor(
             source.createDereference(source.createFetch("_Alta_generator")),
             "index"
           ),
-          source.createIntegerLiteral(orig + 2)
+          source.createIntegerLiteral(orig + 3)
         )
       );
-      source.insertGoto('_' + std::to_string(orig + 2));
+      source.insertGoto('_' + std::to_string(orig + 3));
       source.exitInsertionPoint();
       source.exitInsertionPoint();
       source.insertExpressionStatement(
@@ -6815,6 +6853,11 @@ auto Talta::CTranspiler::transpileWhileLoopStatement(Coroutine& co) -> Coroutine
       loadGenerator();
       generatorLoopScopes.pop();
       popGeneratorScope(info->scope);
+      source.insertGoto('_' + std::to_string(orig + 3));
+      toFunctionRoot();
+      source.insertLabel('_' + std::to_string(orig + 3));
+      source.insertBlock();
+      loadGenerator();
       return co.finalYield();
     }
   } else {
@@ -7081,7 +7124,7 @@ auto Talta::CTranspiler::transpileForLoopStatement(Coroutine& co) -> Coroutine& 
       source.insertLabel('_' + std::to_string(generatorScopeCount));
       source.insertBlock();
       loadGenerator();
-      generatorScopeCount += 4;
+      generatorScopeCount += 5;
       return co.await(boundTranspile, loop->condition, info->condition);
     } else if (co.iteration() == 2) {
       auto [orig] = co.load<size_t>();
@@ -7098,10 +7141,10 @@ auto Talta::CTranspiler::transpileForLoopStatement(Coroutine& co) -> Coroutine& 
             source.createDereference(source.createFetch("_Alta_generator")),
             "index"
           ),
-          source.createIntegerLiteral(orig + 3)
+          source.createIntegerLiteral(orig + 4)
         )
       );
-      source.insertGoto('_' + std::to_string(orig + 3));
+      source.insertGoto('_' + std::to_string(orig + 4));
       source.exitInsertionPoint();
       source.exitInsertionPoint();
       source.insertExpressionStatement(
@@ -7142,7 +7185,7 @@ auto Talta::CTranspiler::transpileForLoopStatement(Coroutine& co) -> Coroutine& 
       return co.await(boundTranspile, loop->body, info->body);
     } else {
       auto [orig] = co.load<size_t>();
-      popGeneratorScope(info->scope);
+      destroyGeneratorScope(info->scope);
       source.insertExpressionStatement(
         source.createAssignment(
           source.createAccessor(
@@ -7158,6 +7201,12 @@ auto Talta::CTranspiler::transpileForLoopStatement(Coroutine& co) -> Coroutine& 
       source.insertBlock();
       loadGenerator();
       generatorLoopScopes.pop();
+      popGeneratorScope(info->scope);
+      source.insertGoto('_' + std::to_string(orig + 4));
+      toFunctionRoot();
+      source.insertLabel('_' + std::to_string(orig + 4));
+      source.insertBlock();
+      loadGenerator();
       popGeneratorScope(info->scope->parent.lock());
       return co.finalYield();
     }
@@ -7234,7 +7283,7 @@ auto Talta::CTranspiler::transpileRangedForLoopStatement(Coroutine& co) -> Corou
       source.insertLabel('_' + std::to_string(generatorScopeCount));
       source.insertBlock();
       loadGenerator();
-      generatorScopeCount += 4;
+      generatorScopeCount += 5;
       if (info->end) {
         return co.await(boundTranspile, loop->end, info->end);
       } else {
@@ -7275,10 +7324,10 @@ auto Talta::CTranspiler::transpileRangedForLoopStatement(Coroutine& co) -> Corou
               source.createDereference(source.createFetch("_Alta_generator")),
               "index"
             ),
-            source.createIntegerLiteral(orig + 3)
+            source.createIntegerLiteral(orig + 4)
           )
         );
-        source.insertGoto('_' + std::to_string(orig + 3));
+        source.insertGoto('_' + std::to_string(orig + 4));
         source.exitInsertionPoint();
         source.exitInsertionPoint();
       }
@@ -7356,10 +7405,10 @@ auto Talta::CTranspiler::transpileRangedForLoopStatement(Coroutine& co) -> Corou
               source.createDereference(source.createFetch("_Alta_generator")),
               "index"
             ),
-            source.createIntegerLiteral(orig + 3)
+            source.createIntegerLiteral(orig + 4)
           )
         );
-        source.insertGoto('_' + std::to_string(orig + 3));
+        source.insertGoto('_' + std::to_string(orig + 4));
         source.exitInsertionPoint();
         source.exitInsertionPoint();
         CExpression tgt = source.createAccessor(fetchTemp("_Alta_iterator_maybe_" + mangledCounter), "target");
@@ -7387,7 +7436,7 @@ auto Talta::CTranspiler::transpileRangedForLoopStatement(Coroutine& co) -> Corou
       return co.await(boundTranspile, loop->body, info->body);
     } else {
       auto [orig] = co.load<size_t>();
-      popGeneratorScope(info->scope);
+      destroyGeneratorScope(info->scope);
       source.insertExpressionStatement(
         source.createAssignment(
           source.createAccessor(
@@ -7403,6 +7452,12 @@ auto Talta::CTranspiler::transpileRangedForLoopStatement(Coroutine& co) -> Corou
       source.insertBlock();
       loadGenerator();
       generatorLoopScopes.pop();
+      popGeneratorScope(info->scope);
+      source.insertGoto('_' + std::to_string(orig + 4));
+      toFunctionRoot();
+      source.insertLabel('_' + std::to_string(orig + 4));
+      source.insertBlock();
+      loadGenerator();
       popGeneratorScope(info->scope->parent.lock());
       return co.finalYield();
     }
@@ -7728,7 +7783,15 @@ auto Talta::CTranspiler::transpileControlDirective(Coroutine& co) -> Coroutine& 
   source.insertBlock();
 
   if (inGenerator) {
-    destroyGeneratorScope(loopScope);
+    auto tmp = generatorScopeStack;
+    while (generatorScopeStack.back().scope->id != loopScope->id) {
+      destroyGeneratorScope(generatorScopeStack.back().scope);
+      generatorScopeStack.pop_back();
+    }
+    if (!ctrl->isBreak) {
+      destroyGeneratorScope(loopScope);
+    }
+    generatorScopeStack = tmp;
 
     auto [cont, brk] = generatorLoopScopes.top();
     source.insertExpressionStatement(
