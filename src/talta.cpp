@@ -145,6 +145,7 @@ void Talta::CTranspiler::initCaptures(std::shared_ptr<DH::ClassDefinitionNode> i
 
   for (size_t i = 0; i < info->toCopy.size(); i++) {
     auto pointed = info->toCopy[i]->type->point();
+    bool wrapIt = pointed->isNative || pointed->pointerLevel() > 0 || (pointed->klass && pointed->klass->isStructure);
     CExpression expr = source.createCast(
       source.createDereference(
         source.createBinaryOperation(
@@ -161,9 +162,9 @@ void Talta::CTranspiler::initCaptures(std::shared_ptr<DH::ClassDefinitionNode> i
           source.createIntegerLiteral(i)
         )
       ),
-      pointed->isNative ? source.createType("_Alta_wrapper", { { CAST::TypeModifierFlag::Pointer } }) : transpileType(pointed.get())
+      wrapIt ? source.createType("_Alta_wrapper", { { CAST::TypeModifierFlag::Pointer } }) : transpileType(pointed.get())
     );
-    if (pointed->isNative) {
+    if (wrapIt) {
       expr = source.createCast(
         source.createAccessor(
           source.createDereference(expr),
@@ -3776,6 +3777,15 @@ auto Talta::CTranspiler::transpileAccessor(Coroutine& co) -> Coroutine& {
         result = source.createFetch(mangleName(info->narrowedTo.get()));
         return co.finalYield(result);
       } else {
+        auto parentFunc = AltaCore::Util::getFunction(info->inputScope).lock();
+        if (parentFunc && parentFunc->isLambda) {
+          for (auto& var: parentFunc->copiedVariables) {
+            if (var->id == info->narrowedTo->id) {
+              result = source.createDereference(source.createFetch(mangleName(info->narrowedTo.get())));
+              return co.finalYield(result);
+            }
+          }
+        }
         return co.await(bind(&CTranspiler::tmpify), acc->target, info->target);
       }
     } else if (info->readAccessor) {
@@ -5059,6 +5069,7 @@ auto Talta::CTranspiler::transpileClassDefinitionNode(Coroutine& co) -> Coroutin
 
         for (size_t i = 0; i < info->toCopy.size(); i++) {
           auto& curr = info->toCopy[i];
+          bool wrapIt = curr->type->isNative || curr->type->pointerLevel() > 0 || (curr->type->klass && curr->type->klass->isStructure);
           auto elmPtr = source.createBinaryOperation(
             CAST::OperatorType::Addition,
             source.createFetch("copiesMalloc"),
@@ -5069,11 +5080,11 @@ auto Talta::CTranspiler::transpileClassDefinitionNode(Coroutine& co) -> Coroutin
             source.createAssignment(
               elm,
               source.createFunctionCall(source.createFetch("malloc"), {
-                source.createSizeof(curr->type->isNative ? source.createType("_Alta_wrapper") : transpileType(curr->type.get())),
+                source.createSizeof(wrapIt ? source.createType("_Alta_wrapper") : transpileType(curr->type.get())),
               })
             )
           );
-          if (curr->type->isNative) {
+          if (wrapIt) {
             auto wrapper = source.createDereference(
               source.createDereference(
                 source.createCast(
@@ -6777,7 +6788,7 @@ auto Talta::CTranspiler::transpileWhileLoopStatement(Coroutine& co) -> Coroutine
   }
   if (inGenerator) {
     if (co.iteration() == 0) {
-      generatorLoopScopes.push(std::make_pair(generatorScopeCount, generatorScopeCount + 2));
+      generatorLoopScopes.push(std::make_pair(generatorScopeCount, generatorScopeCount + 3));
       co.save(generatorScopeCount);
       source.insertExpressionStatement(
         source.createAssignment(
@@ -7108,7 +7119,7 @@ auto Talta::CTranspiler::transpileForLoopStatement(Coroutine& co) -> Coroutine& 
       return co.await(boundTranspile, loop->initializer, info->initializer);
     } else if (co.iteration() == 1) {
       source.insertExpressionStatement(co.result<CExpression>());
-      generatorLoopScopes.push(std::make_pair(generatorScopeCount + 1, generatorScopeCount + 3));
+      generatorLoopScopes.push(std::make_pair(generatorScopeCount + 1, generatorScopeCount + 4));
       co.save(generatorScopeCount);
       source.insertExpressionStatement(
         source.createAssignment(
@@ -7267,7 +7278,7 @@ auto Talta::CTranspiler::transpileRangedForLoopStatement(Coroutine& co) -> Corou
           false
         );
       }
-      generatorLoopScopes.push(std::make_pair(generatorScopeCount + (info->end ? 1 : 0), generatorScopeCount + 3));
+      generatorLoopScopes.push(std::make_pair(generatorScopeCount + (info->end ? 1 : 0), generatorScopeCount + 4));
       co.save(generatorScopeCount);
       source.insertExpressionStatement(
         source.createAssignment(
@@ -7399,6 +7410,7 @@ auto Talta::CTranspiler::transpileRangedForLoopStatement(Coroutine& co) -> Corou
           )
         );
         source.insertBlock();
+        destroyGeneratorScope(info->scope);
         source.insertExpressionStatement(
           source.createAssignment(
             source.createAccessor(
@@ -7788,9 +7800,7 @@ auto Talta::CTranspiler::transpileControlDirective(Coroutine& co) -> Coroutine& 
       destroyGeneratorScope(generatorScopeStack.back().scope);
       generatorScopeStack.pop_back();
     }
-    if (!ctrl->isBreak) {
-      destroyGeneratorScope(loopScope);
-    }
+    destroyGeneratorScope(loopScope);
     generatorScopeStack = tmp;
 
     auto [cont, brk] = generatorLoopScopes.top();
@@ -8521,6 +8531,7 @@ auto Talta::CTranspiler::transpileLambdaExpression(Coroutine& co) -> Coroutine& 
 
       for (size_t i = 0; i < info->toCopy.size(); i++) {
         auto pointed = info->toCopy[i]->type->point();
+        bool wrapIt = pointed->isNative || pointed->pointerLevel() > 0 || (pointed->klass && pointed->klass->isStructure);
         CExpression expr = source.createCast(
           source.createDereference(
             source.createBinaryOperation(
@@ -8529,9 +8540,9 @@ auto Talta::CTranspiler::transpileLambdaExpression(Coroutine& co) -> Coroutine& 
               source.createIntegerLiteral(i)
             )
           ),
-          pointed->isNative ? source.createType("_Alta_wrapper", { { CAST::TypeModifierFlag::Pointer } }) : transpileType(pointed.get())
+          wrapIt ? source.createType("_Alta_wrapper", { { CAST::TypeModifierFlag::Pointer } }) : transpileType(pointed.get())
         );
-        if (pointed->isNative) {
+        if (wrapIt) {
           expr = source.createCast(
             source.createAccessor(
               source.createDereference(expr),
@@ -8682,6 +8693,7 @@ auto Talta::CTranspiler::transpileLambdaExpression(Coroutine& co) -> Coroutine& 
 
       for (size_t i = 0; i < info->toCopy.size(); i++) {
         auto& curr = info->toCopy[i];
+        bool wrapIt = curr->type->isNative || curr->type->pointerLevel() > 0 || (curr->type->klass && curr->type->klass->isStructure);
         auto elmPtr = source.createBinaryOperation(
           CAST::OperatorType::Addition,
           source.createFetch("copiesMalloc"),
@@ -8692,11 +8704,11 @@ auto Talta::CTranspiler::transpileLambdaExpression(Coroutine& co) -> Coroutine& 
           source.createAssignment(
             elm,
             source.createFunctionCall(source.createFetch("malloc"), {
-              source.createSizeof(curr->type->isNative ? source.createType("_Alta_wrapper") : transpileType(curr->type.get())),
+              source.createSizeof(wrapIt ? source.createType("_Alta_wrapper") : transpileType(curr->type.get())),
             })
           )
         );
-        if (curr->type->isNative) {
+        if (wrapIt) {
           auto wrapper = source.createDereference(
             source.createDereference(
               source.createCast(
