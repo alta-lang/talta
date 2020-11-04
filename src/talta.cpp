@@ -7136,6 +7136,7 @@ auto Talta::CTranspiler::transpileForLoopStatement(Coroutine& co) -> Coroutine& 
       source.insertBlock();
       loadGenerator();
       generatorScopeCount += 5;
+      pushGeneratorScope(info->scope);
       return co.await(boundTranspile, loop->condition, info->condition);
     } else if (co.iteration() == 2) {
       auto [orig] = co.load<size_t>();
@@ -7146,6 +7147,7 @@ auto Talta::CTranspiler::transpileForLoopStatement(Coroutine& co) -> Coroutine& 
         )
       );
       source.insertBlock();
+      destroyGeneratorScope(info->scope);
       source.insertExpressionStatement(
         source.createAssignment(
           source.createAccessor(
@@ -7169,34 +7171,13 @@ auto Talta::CTranspiler::transpileForLoopStatement(Coroutine& co) -> Coroutine& 
       );
       source.insertGoto('_' + std::to_string(orig + 2));
       toFunctionRoot();
-      source.insertLabel('_' + std::to_string(orig + 1));
-      source.insertBlock();
-      loadGenerator();
-      co.save(orig);
-      return co.await(boundTranspile, loop->increment, info->increment);
-    } else if (co.iteration() == 3) {
-      auto [orig] = co.load<size_t>();
-      source.insertExpressionStatement(co.result<CExpression>());
-      source.insertExpressionStatement(
-        source.createAssignment(
-          source.createAccessor(
-            source.createDereference(source.createFetch("_Alta_generator")),
-            "index"
-          ),
-          source.createIntegerLiteral(orig)
-        )
-      );
-      source.insertGoto('_' + std::to_string(orig));
-      toFunctionRoot();
       source.insertLabel('_' + std::to_string(orig + 2));
       source.insertBlock();
       loadGenerator();
       co.save(orig);
-      pushGeneratorScope(info->scope);
       return co.await(boundTranspile, loop->body, info->body);
-    } else {
+    } else if (co.iteration() == 3) {
       auto [orig] = co.load<size_t>();
-      destroyGeneratorScope(info->scope);
       source.insertExpressionStatement(
         source.createAssignment(
           source.createAccessor(
@@ -7207,6 +7188,26 @@ auto Talta::CTranspiler::transpileForLoopStatement(Coroutine& co) -> Coroutine& 
         )
       );
       source.insertGoto('_' + std::to_string(orig + 1));
+      toFunctionRoot();
+      source.insertLabel('_' + std::to_string(orig + 1));
+      source.insertBlock();
+      loadGenerator();
+      co.save(orig);
+      return co.await(boundTranspile, loop->increment, info->increment);
+    } else {
+      auto [orig] = co.load<size_t>();
+      source.insertExpressionStatement(co.result<CExpression>());
+      destroyGeneratorScope(info->scope);
+      source.insertExpressionStatement(
+        source.createAssignment(
+          source.createAccessor(
+            source.createDereference(source.createFetch("_Alta_generator")),
+            "index"
+          ),
+          source.createIntegerLiteral(orig)
+        )
+      );
+      source.insertGoto('_' + std::to_string(orig));
       toFunctionRoot();
       source.insertLabel('_' + std::to_string(orig + 3));
       source.insertBlock();
@@ -7294,6 +7295,7 @@ auto Talta::CTranspiler::transpileRangedForLoopStatement(Coroutine& co) -> Corou
       source.insertLabel('_' + std::to_string(generatorScopeCount));
       source.insertBlock();
       loadGenerator();
+      pushGeneratorScope(info->scope);
       generatorScopeCount += 5;
       if (info->end) {
         return co.await(boundTranspile, loop->end, info->end);
@@ -7329,6 +7331,7 @@ auto Talta::CTranspiler::transpileRangedForLoopStatement(Coroutine& co) -> Corou
           )
         );
         source.insertBlock();
+        destroyGeneratorScope(info->scope);
         source.insertExpressionStatement(
           source.createAssignment(
             source.createAccessor(
@@ -7353,42 +7356,10 @@ auto Talta::CTranspiler::transpileRangedForLoopStatement(Coroutine& co) -> Corou
       );
       source.insertGoto('_' + std::to_string(orig + 2));
       toFunctionRoot();
-      source.insertLabel('_' + std::to_string(orig + 1));
-      source.insertBlock();
-      if (info->end) {
-        loadGenerator();
-
-        source.insertExpressionStatement(
-          source.createAssignment(
-            fetchTemp(mangledCounter),
-            source.createBinaryOperation(
-              (loop->decrement) ? CAST::OperatorType::Subtraction : CAST::OperatorType::Addition,
-              fetchTemp(mangledCounter),
-              source.createIntegerLiteral(1)
-            )
-          )
-        );
-        source.insertExpressionStatement(
-          source.createAssignment(
-            source.createAccessor(
-              source.createDereference(source.createFetch("_Alta_generator")),
-              "index"
-            ),
-            source.createIntegerLiteral(orig)
-          )
-        );
-        source.insertGoto('_' + std::to_string(orig));
-      } else {
-        source.insertExpressionStatement(source.createFunctionCall(source.createFetch("_Alta_uncaught_error"), {
-          source.createStringLiteral("@RuntimeError@Impossible@InvalidGeneratorIndex")
-        }));
-      }
-      toFunctionRoot();
       source.insertLabel('_' + std::to_string(orig + 2));
       source.insertBlock();
       loadGenerator();
       co.save(orig);
-      pushGeneratorScope(info->scope);
       if (!info->end) {
         source.insertExpressionStatement(
           source.createAssignment(
@@ -7445,10 +7416,14 @@ auto Talta::CTranspiler::transpileRangedForLoopStatement(Coroutine& co) -> Corou
           tgtExpr
         );
       }
+      co.save(mangledCounter);
       return co.await(boundTranspile, loop->body, info->body);
     } else {
       auto [orig] = co.load<size_t>();
-      destroyGeneratorScope(info->scope);
+      auto [mangledCounter] = co.load<std::string>();
+      if (!info->end) {
+        destroyGeneratorScope(info->scope);
+      }
       source.insertExpressionStatement(
         source.createAssignment(
           source.createAccessor(
@@ -7459,6 +7434,40 @@ auto Talta::CTranspiler::transpileRangedForLoopStatement(Coroutine& co) -> Corou
         )
       );
       source.insertGoto('_' + std::to_string(info->end ? orig + 1 : orig));
+
+      toFunctionRoot();
+      source.insertLabel('_' + std::to_string(orig + 1));
+      source.insertBlock();
+      if (info->end) {
+        loadGenerator();
+        destroyGeneratorScope(info->scope);
+
+        source.insertExpressionStatement(
+          source.createAssignment(
+            fetchTemp(mangledCounter),
+            source.createBinaryOperation(
+              (loop->decrement) ? CAST::OperatorType::Subtraction : CAST::OperatorType::Addition,
+              fetchTemp(mangledCounter),
+              source.createIntegerLiteral(1)
+            )
+          )
+        );
+        source.insertExpressionStatement(
+          source.createAssignment(
+            source.createAccessor(
+              source.createDereference(source.createFetch("_Alta_generator")),
+              "index"
+            ),
+            source.createIntegerLiteral(orig)
+          )
+        );
+        source.insertGoto('_' + std::to_string(orig));
+      } else {
+        source.insertExpressionStatement(source.createFunctionCall(source.createFetch("_Alta_uncaught_error"), {
+          source.createStringLiteral("@RuntimeError@Impossible@InvalidGeneratorIndex")
+        }));
+      }
+
       toFunctionRoot();
       source.insertLabel('_' + std::to_string(orig + 3));
       source.insertBlock();
