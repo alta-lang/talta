@@ -599,13 +599,15 @@ std::string Talta::CTranspiler::hoistMangle(std::shared_ptr<AltaCore::DET::Scope
   return "";
 };
 
-bool Talta::CTranspiler::isAutoIncluded(std::string item, std::string parent, bool inHeader) {
-  auto& items = inHeader ? headerItemsAutoIncluded[parent] : rootItemsAutoIncluded[parent];
+bool Talta::CTranspiler::isAutoIncluded(std::string item, std::vector<std::string> parents, bool inHeader) {
+  auto& items = inHeader ? headerItemsAutoIncluded[parents.back()] : rootItemsAutoIncluded[parents.back()];
   for (auto& included: items) {
     if (item == included) {
       return true;
     }
-    if (included != parent && isAutoIncluded(item, included, true)) {
+    std::vector<std::string> parentsButBetter = parents;
+    parentsButBetter.push_back(included);
+    if (std::find(parents.begin(), parents.end(), included) != parents.end() && isAutoIncluded(item, parentsButBetter, true)) {
       return true;
     }
   }
@@ -625,7 +627,7 @@ void Talta::CTranspiler::insertHoist(std::shared_ptr<AltaCore::DET::ScopeItem> i
 
 #define TALTA_TEST_INSERTION_PASTE bool testInsertion = true;\
   if (currentItem.size() > 0 && !hoistMangle(currentItem.back()).empty()) {\
-    testInsertion = !isAutoIncluded(hoistMangle(item), hoistMangle(currentItem.back()), inHeader);\
+    testInsertion = !isAutoIncluded(hoistMangle(item), { hoistMangle(currentItem.back()) }, inHeader);\
   }
 
 void Talta::CTranspiler::hoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, bool inHeader, bool includeVariables) {

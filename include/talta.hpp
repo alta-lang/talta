@@ -501,7 +501,7 @@ namespace Talta {
       std::vector<std::shared_ptr<AltaCore::DET::ScopeItem>> currentItem;
 
       void insertHoist(std::shared_ptr<AltaCore::DET::ScopeItem> item, bool inHeader);
-      bool isAutoIncluded(std::string item, std::string parent, bool inHeader);
+      bool isAutoIncluded(std::string item, std::vector<std::string> parents, bool inHeader);
       std::string hoistMangle(std::shared_ptr<AltaCore::DET::ScopeItem> item);
     public:
       std::shared_ptr<Ceetah::AST::RootNode> hRoot = nullptr;
