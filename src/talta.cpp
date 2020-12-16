@@ -607,7 +607,7 @@ bool Talta::CTranspiler::isAutoIncluded(std::string item, std::vector<std::strin
     }
     std::vector<std::string> parentsButBetter = parents;
     parentsButBetter.push_back(included);
-    if (std::find(parents.begin(), parents.end(), included) != parents.end() && isAutoIncluded(item, parentsButBetter, true)) {
+    if (std::find(parents.begin(), parents.end(), included) == parents.end() && isAutoIncluded(item, parentsButBetter, true)) {
       return true;
     }
   }
