@@ -1293,9 +1293,25 @@ auto Talta::CTranspiler::calculateGeneratorScopeStackSize(std::shared_ptr<AltaCo
   return stackSizeExpr;
 };
 
-void Talta::CTranspiler::destroyGeneratorScope(std::shared_ptr<AltaCore::DET::Scope> scope) {
+void Talta::CTranspiler::destroyGeneratorScope(std::shared_ptr<AltaCore::DET::Scope> scope, bool forceIt) {
+  auto stackSave = generatorStack;
   if (generatorScopeStack.back().scope->id != scope->id) {
-    return;
+    if (!forceIt) {
+      return;
+    }
+    auto tmp = generatorScopeStack;
+    while (generatorScopeStack.back().scope->id != scope->id) {
+      auto curr = generatorScopeStack.back().scope;
+      destroyGeneratorScope(curr, false);
+      for (size_t i = generatorStack.size(); i > 0; --i) {
+        auto& var = generatorStack[i - 1];
+        if (var.scope->id == curr->id || var.scope->hasParent(curr)) {
+          generatorStack.erase(generatorStack.begin() + (i - 1));
+        }
+      }
+      generatorScopeStack.pop_back();
+    }
+    generatorScopeStack = tmp;
   }
 
   for (auto rit = generatorStack.rbegin(); rit != generatorStack.rend(); ++rit) {
@@ -1355,6 +1371,7 @@ void Talta::CTranspiler::destroyGeneratorScope(std::shared_ptr<AltaCore::DET::Sc
       }
     }
   }
+  generatorStack = stackSave;
 
   source.insertExpressionStatement(
     source.createFunctionCall(
@@ -3451,12 +3468,13 @@ auto Talta::CTranspiler::transpileReturnDirectiveNode(Coroutine& co) -> Coroutin
 
     std::shared_ptr<AltaCore::DET::Scope> target = info->inputScope;
     while (target) {
-      if (inGenerator) {
-        destroyGeneratorScope(target);
-      } else {
+      if (!inGenerator) {
         stackBookkeepingStop(target);
       }
       if (target->parentFunction.lock()) {
+        if (inGenerator) {
+          destroyGeneratorScope(target, true);
+        }
         break;
       }
       target = target->parent.lock();
@@ -7806,13 +7824,7 @@ auto Talta::CTranspiler::transpileControlDirective(Coroutine& co) -> Coroutine& 
   source.insertBlock();
 
   if (inGenerator) {
-    auto tmp = generatorScopeStack;
-    while (generatorScopeStack.back().scope->id != loopScope->id) {
-      destroyGeneratorScope(generatorScopeStack.back().scope);
-      generatorScopeStack.pop_back();
-    }
-    destroyGeneratorScope(loopScope);
-    generatorScopeStack = tmp;
+    destroyGeneratorScope(loopScope, true);
 
     auto [cont, brk] = generatorLoopScopes.top();
     source.insertExpressionStatement(

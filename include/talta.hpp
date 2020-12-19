@@ -482,7 +482,7 @@ namespace Talta {
       void pushGeneratorVariable(std::string name, std::shared_ptr<AltaCore::DET::Type> type, bool destroy = true);
       void pushGeneratorVariable(std::string name, std::shared_ptr<AltaCore::DET::Type> type, std::shared_ptr<Ceetah::AST::Expression> init, bool destroy = true);
       void pushGeneratorScope(std::shared_ptr<AltaCore::DET::Scope> scope);
-      void destroyGeneratorScope(std::shared_ptr<AltaCore::DET::Scope> scope);
+      void destroyGeneratorScope(std::shared_ptr<AltaCore::DET::Scope> scope, bool forceIt = false);
       void popGeneratorScope(std::shared_ptr<AltaCore::DET::Scope> scope);
       void toFunctionRoot();
       CExpression calculateGeneratorScopeStackSize(std::shared_ptr<AltaCore::DET::Scope> scope);
