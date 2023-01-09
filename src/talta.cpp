@@ -6,17 +6,6 @@
 #include <iostream>
 #endif
 
-static bool addTranspilerToAltaLoggingRepository() {
-  using namespace AltaCore::Logging;
-
-  shortSubsystemNames.push_back(std::make_pair<std::string, std::string>("transpiler", "TSP"));
-  codeSummaryRepositories["transpiler"] = {};
-
-  return true;
-};
-
-static bool transpilerAddedToLoggingRepository = addTranspilerToAltaLoggingRepository();
-
 namespace Talta {
   namespace {
     using AltaNodeType = AltaCore::AST::NodeType;
@@ -26,6 +15,17 @@ namespace Talta {
     namespace DH = AltaCore::DH;
     namespace DET = AltaCore::DET;
   };
+
+  bool init() {
+    using namespace AltaCore::Logging;
+
+    shortSubsystemNames.push_back(std::make_pair<std::string, std::string>("transpiler", "TSP"));
+    codeSummaryRepositories["transpiler"] = {};
+
+    return true;
+  };
+
+  void finit() {};
 
   ALTACORE_MAP<std::string, std::vector<std::string>> moduleIncludes;
   ALTACORE_MAP<std::string, bool> varargTable;

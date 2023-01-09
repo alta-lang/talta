@@ -203,6 +203,9 @@ namespace Talta {
 
   void registerAttributes(AltaCore::Filesystem::Path modulePath);
 
+  bool init();
+  void finit();
+
   class CTranspiler {
     private:
       using Coroutine = Talta::Helpers::Coroutine<std::shared_ptr<AltaCore::AST::Node>, std::shared_ptr<AltaCore::DH::Node>>;
