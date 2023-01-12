@@ -104,6 +104,7 @@ namespace Talta {
     { ANT::YieldExpression, &CTranspiler::transpileYieldExpression },
     { ANT::AssertionStatement, &CTranspiler::transpileAssertionStatement },
     { ANT::AwaitExpression, &CTranspiler::transpileAwaitExpression },
+    { ANT::VariableDeclarationStatement, &CTranspiler::transpileVariableDeclarationStatement },
   };
 
   const CTranspiler::CopyInfo CTranspiler::defaultCopyInfo = std::make_pair(false, false);
@@ -539,12 +540,22 @@ std::vector<uint8_t> Talta::CTranspiler::convertTypeModifiers(std::vector<uint8_
   // C implementation, references are implemented as pointers, so
   // we can just change references to pointers
   for (auto& mod: altaModifiers) {
-    if (mod & (uint8_t)AltaCore::Shared::TypeModifierFlag::Reference) {
-      mod &= ~(uint8_t)AltaCore::Shared::TypeModifierFlag::Reference;
-      mod |= (uint8_t)Ceetah::AST::TypeModifierFlag::Pointer;
-    } else if (mod >= (uint8_t)AltaCore::Shared::TypeModifierFlag::Signed) {
-      mod = mod >> 1;
+    uint8_t newMod = 0;
+
+    for (uint8_t i = 0; i < 7; ++i) {
+      if ((mod & (1 << i)) == 0) {
+        continue;
+      }
+      if (i < 2) {
+        newMod |= 1 << i;
+      } else if (i == 2) {
+        newMod |= static_cast<uint8_t>(Ceetah::AST::TypeModifierFlag::Pointer);
+      } else {
+        newMod |= 1 << (i - 1);
+      }
     }
+
+    mod = newMod;
   }
 
   return altaModifiers;
@@ -4625,6 +4636,10 @@ auto Talta::CTranspiler::transpileFunctionDeclarationNode(Coroutine& co) -> Coro
   auto func = std::dynamic_pointer_cast<AAST::FunctionDeclarationNode>(node);
   auto info = std::dynamic_pointer_cast<DH::FunctionDeclarationNode>(_info);
   bool targetIsHeader = /*info->function->isExport || info->function->isMethod*/ true;
+  auto& target = targetIsHeader ? header : source;
+  auto mangledFuncName = mangleName(info->function.get());
+  std::vector<std::tuple<std::string, std::shared_ptr<CAST::Type>>> cParams;
+  bool vararg = false;
 
   if (targetIsHeader) {
     auto alwaysImport = alwaysImportTable.find(func->id) != alwaysImportTable.end();
@@ -4636,6 +4651,29 @@ auto Talta::CTranspiler::transpileFunctionDeclarationNode(Coroutine& co) -> Coro
   for (auto& hoistedType: info->function->publicHoistedItems) {
     hoist(hoistedType, targetIsHeader);
   }
+
+  for (size_t i = 0; i < info->function->parameterVariables.size(); i++) {
+    auto& var = info->function->parameterVariables[i];
+    auto& param = func->parameters[i];
+    auto& paramInfo = info->parameters[i];
+    auto type = (param->isVariable) ? paramInfo->type->type->point() : paramInfo->type->type;
+    auto mangled = mangleName(var.get());
+    if (varargTable[param->id]) {
+      vararg = true;
+      continue;
+    }
+    if (param->isVariable) {
+      mangled = mangled.substr(12);
+    }
+    cParams.push_back({ (param->isVariable ? "_Alta_array_" : "") + mangled, transpileType(type.get()) });
+    if (param->isVariable) {
+      cParams.push_back({ "_Alta_array_length_" + mangled, size_tType });
+    }
+  }
+
+  auto returnType = transpileType(info->function->returnType.get());
+
+  target.insertFunctionDeclaration(mangledFuncName, cParams, returnType, vararg);
 
   currentItem.pop_back();
 
@@ -7741,6 +7779,7 @@ auto Talta::CTranspiler::transpileStructureDefinitionStatement(Coroutine& co) ->
 
   for (auto& item: info->structure->scope->items) {
     if (auto var = std::dynamic_pointer_cast<AltaCore::DET::Variable>(item)) {
+      hoist(var->type, true);
       members.push_back(std::make_pair(mangleName(var.get()), transpileType(var->type.get())));
     }
   }
@@ -9852,6 +9891,30 @@ auto Talta::CTranspiler::transpileAwaitExpression(Coroutine& co) -> Coroutine& {
       }
     }
   }
+};
+
+auto Talta::CTranspiler::transpileVariableDeclarationStatement(Coroutine& co) -> Coroutine& {
+  auto [node, _info] = co.arguments();
+  auto varDef = std::dynamic_pointer_cast<AAST::VariableDeclarationStatement>(node);
+  auto info = std::dynamic_pointer_cast<DH::VariableDeclarationStatement>(_info);
+
+  bool inModuleRoot = !info->variable->parentScope.expired() && !info->variable->parentScope.lock()->parentModule.expired();
+  auto mangledVarName = mangleName(info->variable.get());
+  auto type = transpileType(info->variable->type.get());
+
+  if (inModuleRoot) {
+    hoist(info->variable, false);
+
+    auto mod = info->variable->parentScope.lock()->parentModule.lock();
+    auto mangledModName = mangleName(mod.get());
+    auto alwaysImport = alwaysImportTable.find(varDef->id) != alwaysImportTable.end();
+    headerPredeclaration("_ALTA_VARIABLE_" + mangledVarName, alwaysImport ? "" : mangledModName);
+    hoist(info->variable->type, true);
+    header.insertVariableDeclaration(type, mangledVarName);
+    header.exitInsertionPoint();
+  }
+
+  return co.finalYield();
 };
 // </transpilation-coroutines>
 

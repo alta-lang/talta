@@ -430,6 +430,7 @@ namespace Talta {
       Coroutine& transpileYieldExpression(Coroutine& co);
       Coroutine& transpileAssertionStatement(Coroutine& co);
       Coroutine& transpileAwaitExpression(Coroutine& co);
+      Coroutine& transpileVariableDeclarationStatement(Coroutine& co);
       // </transpilation-methods>
 
       static const ALTACORE_MAP<AltaCore::AST::NodeType, CoroutineMemberFunction> transpilationMethods;
